@@ -1,27 +1,5 @@
 # Windows validation
 
-<a id="2026-10-01-local-speech"></a>
-## 2026-10-01 Local speech preparation — local-models 0.1.0
-
-Tested with native **Windows x64 / Node 22.14.0 / sherpa-onnx-node 1.13.8**, 31 GiB RAM and an RTX 5070 Ti with 16 GiB VRAM. Both speech engines used **CPU**. Dialogue remains configured through the existing pet's cloud providers; local dialogue is disabled. This separate service is prepared for the application refactor, not yet wired into the existing pet UI/runtime.
-
-| Check | Observed result |
-| --- | --- |
-| Native Windows protocol tests | 16 passed, no failures or skips |
-| SenseVoice int8 official Chinese sample | 5.592 s audio, 949 ms first request including model load; 92 ms on a later warm request |
-| Kokoro int8 Chinese voice 3 | 3.36 s non-silent PCM16 WAV, 24 kHz; 3199 ms first request, 1971 ms warm |
-| Generated TTS → SenseVoice | Returned `你好，今天我们一起测试本地语音。`; 49–55 ms in these short checks |
-| Local ASR → existing DeepSeek cloud dialogue → local Kokoro TTS | Real `deepseek-flash` reply `收到，本地语音测试正常。`; cloud request 624 ms, 41 input + 7 output tokens; local synthesis 3034 ms, 132,110 B WAV |
-| Model installation recovery | Initial install, deliberate token-file corruption, repair with backup, and verified idempotent rerun passed in an isolated local directory |
-| GPT-SoVITS contract | Mock native HTTP verified reference/weight parameters, serialized complete synthesis and client cancellation; no real fine-tuned voice inference |
-| MiniMax native TTS contract | Mock HTTP verified hex decoding, HTTP-200 error codes and upstream-only credentials; no paid provider request |
-
-Times are observations from short fixtures, not an accuracy or sustained-load benchmark. The official ASR sample returned `开饭时间早上9点至下午5点。`; this includes a likely homophone error for `开放`. The generated round-trip sentence matched. Real room noise, the user's accent and microphone still need evaluation. SenseVoice is utterance-based; the application must segment recordings using VAD for low-latency use.
-
-The initial npm run inherited a Bash/WSL script shell. The new module now uses Windows `ComSpec`; tests were rerun with `process.platform=win32` and the Windows Node executable. GPT dynamic voice configuration rejects incomplete or mixed weight pairs; loopback host aliases share the same transaction lock. Cancelled waiters return promptly without allowing later synthesis to overtake ongoing backend work. GPT raw PCM is refused because its native sample rate may differ from OpenAI's 24 kHz convention. A one-off end-to-end check read the existing private cloud configuration in memory and used a fixed test sentence; credentials and personal conversations were not logged or committed. It did not change the pet configuration, memory or voice selections.
-
-Run the commands in [the module guide](local-models/README.md#验证与当前边界). Weights, local configs, samples and `validation.json` are ignored. Primary GPT-SoVITS quality requires the user's matching API installation, fine-tuned weights and reference audio. Qwen/Paraformer/Whisper compatible services, physical microphone/speaker playback, the existing pet integration and actual MiniMax cloud inference remain unverified in this update. Mac implementation and Mac-only documentation were not changed.
-
 <a id="2026-09-19-windows-update"></a>
 ## 2026-09-19 Windows update — 0.1.2
 

@@ -1,13 +1,3 @@
-# Windows local-models 0.1.0 — 2026-10-01
-
-- 新增独立本地语音网关，供应用重构接入；桌宠版本保持 0.1.2，对话沿用已有云端配置，本地对话默认关闭。
-- 实现 SenseVoice Small int8 与 Kokoro 82M 的 Windows CPU 推理和 OpenAI 语音接口；提供校验下载、staging 安装、损坏安装修复及真实音频 smoke。
-- 保留 GPT-SoVITS 为主 TTS，适配原生参考音频、权重选择与完整音频；补齐权重对校验、串行合成、及时取消和后台状态未知处理，拒绝采样率不兼容的 raw PCM。
-- 预留 Paraformer、Whisper 和 Qwen3-TTS 兼容服务配置，新增默认关闭的 MiniMax 原生云端语音适配。
-- Windows 协议回归 16 项通过，真实 SenseVoice/Kokoro 和 TTS→ASR 回转写通过；GPT 微调权重与参考音频仍需自行配置。更新 Windows 文档和首页 Windows 信息。
-
-验证范围见 [本地语音验证](WINDOWS-VALIDATION.md#2026-10-01-local-speech)。
-
 # Windows 0.1.2 — 2026-09-19
 
 - 修复管理员运行器默认以 Administrators 为文件所有者时的误拒绝：仅接纳当前提升令牌的 Administrators 所有者，继续拒绝其他所有者和宽泛访问权限。

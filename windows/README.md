@@ -6,7 +6,6 @@
 Windows 桌宠开发与本地运行入口。
 
 - [安装、配置和任务派发](README-WINDOWS.md)
-- [本地 ASR/TTS 准备与接口](local-models/README.md)（独立模块 0.1.0；对话继续云端）
 - [本机验证记录](WINDOWS-VALIDATION.md#2026-09-19-windows-update)
 - [0.1.2 更新内容](CHANGELOG-WINDOWS.md)
 
