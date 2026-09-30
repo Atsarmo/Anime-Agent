@@ -59,7 +59,7 @@ AAAAGENT is a desktop companion developed primarily for macOS, with a separate W
 | Platform | Status and entry point |
 | --- | --- |
 | **macOS** | The primary version, with source in the root `code/desktop-pet/`. See [Mac setup](docs/SETUP.md#english). |
-| **Windows** | A separate Electron development version in `windows/code/desktop-pet/`. See [Windows setup](windows/README-WINDOWS.md). Version 0.1.2 includes emotion states, message snapshots and web queries, with Windows regressions for chat import, self-service setup and task dispatch. See the [dated validation](windows/WINDOWS-VALIDATION.md#2026-09-19-windows-update). |
+| **Windows** | A separate Electron development version in `windows/code/desktop-pet/`. See [Windows setup](windows/README-WINDOWS.md). Version 0.1.2 includes emotion states, message snapshots and web queries, with Windows regressions for chat import, self-service setup and task dispatch. See the [dated validation](windows/WINDOWS-VALIDATION.md#2026-09-19-windows-update). A separate [local ASR/TTS preparation module](windows/local-models/README.md#english) is available; dialogue stays in the cloud and the existing pet UI is not yet wired to this module. |
 
 See [platform differences and issue reporting](docs/PLATFORMS.md#english). Include your OS version, reproduction steps and sanitized errors. Install dependencies separately for each platform; do not mix configuration or build outputs.
 

@@ -5,6 +5,7 @@
 The Windows development version uses Electron with a separate Node.js backend. Its source is in `windows/code/desktop-pet/`; install dependencies and build there.
 
 - [Windows installation, upgrades and task dispatch](README-WINDOWS.md)
+- [Local ASR/TTS preparation and API](local-models/README.md#english) (separate module 0.1.0; dialogue stays in the cloud)
 - [Web-based key, model and voice setup](docs/SETUP.md#english)
 - [Memory, chat import and emotion state](docs/MEMORY.md#english)
 - [Windows validation and limitations](WINDOWS-VALIDATION.md#2026-09-19-windows-update)

@@ -59,7 +59,7 @@ AAAAGENT 是一个以 macOS 为主要平台、同时提供 Windows 开发版的�
 | 平台 | 状态与入口 |
 | --- | --- |
 | **macOS** | 当前主要维护和使用的完整版本；源码在根目录 `code/desktop-pet/`。查看 [Mac 安装说明](docs/SETUP.md)。 |
-| **Windows** | 独立 Electron 开发版；源码在 `windows/code/desktop-pet/`。查看 [Windows 安装说明](windows/README-WINDOWS.md)。0.1.2 已同步独立情绪状态、消息快照与网页查询，并完成旧聊天导入、自助配置和任务转交回归；见 [Windows 验证](windows/WINDOWS-VALIDATION.md#2026-09-19-windows-update)。 |
+| **Windows** | 独立 Electron 开发版；源码在 `windows/code/desktop-pet/`。查看 [Windows 安装说明](windows/README-WINDOWS.md)。0.1.2 已同步独立情绪状态、消息快照与网页查询，并完成旧聊天导入、自助配置和任务转交回归；见 [Windows 验证](windows/WINDOWS-VALIDATION.md#2026-09-19-windows-update)。另提供 [本地 ASR/TTS 准备模块](windows/local-models/README.md)，对话继续云端；旧桌宠页面尚未接入该独立模块。 |
 
 详情见 [平台差异与问题反馈](docs/PLATFORMS.md)。报告问题时请附系统版本、复现步骤和去除敏感信息的报错。两个目录分别安装依赖，勿混用配置或构建产物。
 

@@ -84,6 +84,8 @@ npm.cmd start
 
 ## 4. 本地模型参数
 
+这里的参数指 Live2D 外观。**本地语音模型**使用新的独立 [ASR/TTS 准备模块](local-models/README.md)：SenseVoice Small 为中文识别首选，GPT-SoVITS 为主 TTS，Kokoro 与 Qwen3-TTS 为备选。2026-10-01 已在原生 Windows 实测 SenseVoice/Kokoro 与语音回转写；微调 GPT 的实测需自己的权重与参考 WAV。当前对话继续使用云端，老桌宠页面尚未接入该独立模块。
+
 可以在被 Git 忽略的 `desktop/assets/local-model/parameter-map.json` 中添加可选的 `parameterOverrides`，例如 `"parameterOverrides": { "YOUR_MODEL_SWITCH": 1 }`。保留文件中已有的头部、嘴型映射，用模型的实际参数 ID 替换示例名称。
 
 覆盖值必须是有限数字，且位于模型声明的参数范围内；每帧都会应用。适合固定本地外观开关，不适合覆盖口型等需要连续动画的参数。具体模型参数、素材和私人配置不提交到公共仓库。
