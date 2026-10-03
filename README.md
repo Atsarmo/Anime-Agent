@@ -1,3 +1,15 @@
+## V2.0 延期说明 · 2026-10-03
+
+抱歉，让大家久等了。十一玩得太开心，加上工程适配还没调顺，**T3 工作台、可视化 Agent Flow 节点矩阵、本地模型接入、优化后的记忆管理和 DeepSeek 大鲸鱼 Live2D** 将延后一段时间发布。我想先把安装和实际使用调好，让大家拿到后少折腾。
+
+鲸鱼 Live2D 的动作和立体视角需要手调，AI 生成素材容易出现视角错位、形体不一致。已准备一只替代桌宠和多套表情，会随 **V2.0** 一起更新。[查看完整说明](docs/V2_RELEASE_UPDATE.md)。
+
+![开发中的 Flow 工作台](assets/previews/v2-flow-workbench.png)
+
+*Flow 工作台开发预览：以对话节点组织项目，点击节点展开会话。*
+
+---
+
 ## 修改记录
 
 [查看全部修改记录](CHANGELOG.md) · 时间：北京时间（UTC+8）
@@ -32,7 +44,7 @@
 </div>
 
 > [!IMPORTANT]
-> **我们将在两天后（2026 年 9 月 19 日）发布自己的「大鲸鱼 DeepSeek」Live2D 模型。**
+> **「大鲸鱼 DeepSeek」Live2D 模型延期制作，当前安排见[延期说明](docs/V2_RELEASE_UPDATE.md)。**
 >
 > 目前使用、视频中展示的是**量贩式购买的第三方 Live2D 模型**（[B站搜索「Live2D量贩」](https://search.bilibili.com/all?vt=35099468&amp;keyword=live2d%E9%87%8F%E8%B4%A9&amp;search_source=1&amp;from_source=web_recommend_search)）。原作者的授权不允许二次转发，因此不随本项目提供模型、纹理、表情和动作文件。
 >

@@ -1,3 +1,15 @@
+## V2.0 release delay · 2026-10-03
+
+Sorry for keeping you waiting. I enjoyed the National Day holiday a little too much, and engineering integration still needs work. **The T3 workbench, visual Agent Flow node matrix, local model support, improved memory management, and DeepSeek whale Live2D model** will take a little longer. I want installation and everyday use to work well, so you spend less time fixing things locally.
+
+The whale's motion artwork and perspective need manual adjustment. A replacement desktop pet with multiple expressions is prepared and will ship with **V2.0**. [Read the full update](docs/V2_RELEASE_UPDATE.md#english).
+
+![Flow workbench development preview](assets/previews/v2-flow-workbench.png)
+
+*Development preview: projects are organized as conversation nodes that open into individual conversations.*
+
+---
+
 ## Changelog
 
 [View all updates](CHANGELOG.md#english) · Times: UTC+8
@@ -32,7 +44,7 @@ Local model integration is being planned:
 </div>
 
 > [!IMPORTANT]
-> **We will release our own “Big Whale DeepSeek” Live2D model in two days, on September 19, 2026.**
+> **The DeepSeek whale Live2D model is taking longer to make. See the [release update](docs/V2_RELEASE_UPDATE.md#english).**
 >
 > The model currently used and shown in the demo is a **purchased third-party stock Live2D model** ([search stock Live2D models on Bilibili](https://search.bilibili.com/all?vt=35099468&amp;keyword=live2d%E9%87%8F%E8%B4%A9&amp;search_source=1&amp;from_source=web_recommend_search)). Its original license prohibits redistribution, so its model files, textures, expressions and motions are not included in this project.
 >
