@@ -2,9 +2,11 @@
 
 Sorry for keeping you waiting. I enjoyed the National Day holiday a little too much, and engineering integration still needs work. **The T3 workbench, visual Agent Flow node matrix, local model support, improved memory management, and DeepSeek whale Live2D model** will take a little longer. I want installation and everyday use to work well, so you spend less time fixing things locally.
 
+Our chosen T3 version has no ready-made DeepSeek Harness or domestic-model channel, and our original Codex connection was pinned to an older version. I am addressing provider adapters, upgrade compatibility, and session synchronization.
+
 The whale's motion artwork and perspective need manual adjustment. A replacement desktop pet with multiple expressions is prepared and will ship with **V2.0**. [Read the full update](docs/V2_RELEASE_UPDATE.md#english).
 
-![Flow workbench development preview](assets/previews/v2-flow-workbench.png)
+![Flow workbench development preview](assets/previews/v2-flow-workbench-original.jpg)
 
 *Development preview: projects are organized as conversation nodes that open into individual conversations.*
 

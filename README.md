@@ -2,9 +2,11 @@
 
 抱歉，让大家久等了。十一玩得太开心，加上工程适配还没调顺，**T3 工作台、可视化 Agent Flow 节点矩阵、本地模型接入、优化后的记忆管理和 DeepSeek 大鲸鱼 Live2D** 将延后一段时间发布。我想先把安装和实际使用调好，让大家拿到后少折腾。
 
+工程上，接入的 T3 版本缺少现成的 DeepSeek Harness／国产模型通道，原先的 Codex 连接也绑定了旧版本。我正在补齐通道适配、升级兼容和会话同步。
+
 鲸鱼 Live2D 的动作和立体视角需要手调，AI 生成素材容易出现视角错位、形体不一致。已准备一只替代桌宠和多套表情，会随 **V2.0** 一起更新。[查看完整说明](docs/V2_RELEASE_UPDATE.md)。
 
-![开发中的 Flow 工作台](assets/previews/v2-flow-workbench.png)
+![开发中的 Flow 工作台](assets/previews/v2-flow-workbench-original.jpg)
 
 *Flow 工作台开发预览：以对话节点组织项目，点击节点展开会话。*
 
