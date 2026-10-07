@@ -177,12 +177,32 @@ if (smoke) {
     if (JSON.stringify(closedBounds) !== JSON.stringify(openBounds) || JSON.stringify(closedModelPosition) !== JSON.stringify(openModelPosition)) throw Error('Opening the drawer moved the native surface or character');
     const echoed = await win.webContents.executeJavaScript("document.getElementById('reply').textContent.includes('Offline preview received')");
     if (!echoed) throw Error('Text did not complete a backend round trip');
-    console.log('WINDOWS_SMOKE_OK: Live2D renderer, isolated preload, backend round trip, panel layout.');
+    await win.webContents.executeJavaScript("document.getElementById('close').click()");
+    const reminder={channel:'reminder_due',reminder:{id:'reminder-smoke',text:'测试提醒：喝水',dueAt:Date.now()}};
+    connection.onMessage(reminder,connection.generation);
+    connection.onMessage(reminder,connection.generation);
+    await new Promise(done=>setTimeout(done,200));
+    const reminderVisible=await win.webContents.executeJavaScript("document.getElementById('drawer').hidden && !document.getElementById('reminder-bubble').hidden && document.getElementById('reminder-bubble-text').textContent==='测试提醒：喝水' && document.getElementById('reply').textContent.split('测试提醒：喝水').length===2");
+    if(!reminderVisible)throw Error('Reminder bubble was not shown with the drawer closed');
+    if(JSON.stringify(closedBounds)!==JSON.stringify(win.getBounds()))throw Error('Reminder moved the native surface');
+    const bubbleFits=await win.webContents.executeJavaScript("(() => {const b=document.getElementById('reminder-bubble').getBoundingClientRect(),c=document.getElementById('character').getBoundingClientRect();return b.left>=0&&b.top>=0&&b.right<=innerWidth&&b.bottom<=innerHeight&&b.top<c.top+c.height/2;})()");
+    if(!bubbleFits)throw Error('Reminder bubble was clipped or placed below the character');
+    connection.onMessage({channel:'reminder_due',reminder:{id:'reminder-smoke-second',text:'第二条提醒',dueAt:Date.now()}},connection.generation);
+    await new Promise(done=>setTimeout(done,100));
+    const queued=await win.webContents.executeJavaScript("document.getElementById('reminder-bubble-text').textContent==='测试提醒：喝水' && document.getElementById('reminder-bubble-label').textContent.includes('2条')");
+    if(!queued)throw Error('A second reminder replaced the first');
+    await win.webContents.executeJavaScript("document.getElementById('reminder-bubble-close').click()");
+    const next=await win.webContents.executeJavaScript("document.getElementById('reminder-bubble-text').textContent==='第二条提醒' && document.getElementById('drawer').hidden");
+    if(!next)throw Error('Dismiss did not advance the reminder queue');
+    await win.webContents.executeJavaScript("document.getElementById('reminder-bubble-close').click()");
+    if(!await win.webContents.executeJavaScript("document.getElementById('reminder-bubble').hidden"))throw Error('Dismiss did not hide the reminder bubble');
+    deliver('showReminder',reminder.reminder);
+    console.log('WINDOWS_SMOKE_OK: Live2D renderer, isolated preload, backend round trip, panel layout, reminder display and deduplication.');
     if (option('--screenshot')) {
       win.showInactive();
       await new Promise(done => setTimeout(done, 600));
-      const visible = await win.webContents.executeJavaScript("!document.getElementById('drawer').hidden && getComputedStyle(document.getElementById('drawer')).opacity === '1'");
-      if (!visible) throw Error('Chat drawer is not visible');
+      const visible = await win.webContents.executeJavaScript("!document.getElementById('reminder-bubble').hidden && document.getElementById('drawer').hidden");
+      if (!visible) throw Error('Reminder bubble is not visible');
       await writeFile(resolve(option('--screenshot')), (await win.webContents.capturePage()).toPNG());
     }
   } catch (error) { console.error(error.message); process.exitCode = 1; }

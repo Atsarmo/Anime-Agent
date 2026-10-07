@@ -14,7 +14,7 @@ export async function requestOpenAI({ key, model, input, signal, fetcher = fetch
     method: 'POST', redirect: 'error', signal,
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, input, stream: false, store: false, max_output_tokens: 4096,
-      instructions: '你是用户的桌面陪伴助手，请用自然、简洁的中文交流。你目前只支持文字对话和本次会话的上下文，没有执行工具、定时提醒、语音或长期记忆。不能声称已设置提醒、操作电脑或完成未实际执行的任务。' })
+      instructions: '你是用户的桌面陪伴助手，请用自然、简洁的中文交流。桌宠的本地程序支持单次提醒，用户可直接发送“10分钟后提醒我喝水”“1:45提醒我喝水”“查看提醒”“取消所有提醒”。提醒按北京时间计算，需保持桌宠运行，关闭或休眠期间到期会在恢复运行后补提醒。你不能声称已设置提醒，只有本地程序的实际回执能确认设置成功。你没有执行工具、语音或长期记忆。不能声称操作电脑或完成未实际执行的任务。' })
   });
   if (!response.ok) {
     // Classify fixed provider codes without displaying raw error text or keys.

@@ -285,6 +285,32 @@ function connectionChanged(value) {
   renderUI();
   if (!connection.active) panel(true);
 }
+const displayedReminders = new Set();
+const reminderQueue = [], presentedReminders = new Set();
+function positionReminderBubble(){
+  const bubble=$('reminder-bubble');if(bubble.hidden)return;
+  const character=$('character').getBoundingClientRect();
+  bubble.style.left=`${Math.max(8,Math.min(innerWidth-bubble.offsetWidth-8,character.left+character.width*.42-bubble.offsetWidth-10))}px`;
+  bubble.style.top=`${Math.max(8,Math.min(innerHeight-bubble.offsetHeight-16,character.top+character.height*.24-bubble.offsetHeight-10))}px`;
+}
+function showNextReminder(animate=true){
+  const bubble=$('reminder-bubble'), reminder=reminderQueue[0];
+  bubble.getAnimations().forEach(animation=>animation.cancel());
+  if(!reminder){bubble.hidden=true;return;}
+  $('reminder-bubble-text').textContent=reminder.text;
+  $('reminder-bubble-label').textContent=`⏰ 提醒${reminderQueue.length>1?' · '+reminderQueue.length+'条':''}`;
+  bubble.hidden=false;positionReminderBubble();
+  if(animate&&!matchMedia('(prefers-reduced-motion: reduce)').matches)bubble.animate([{opacity:0,transform:'translateY(8px) scale(.9)'},{opacity:1,transform:'translateY(-2px) scale(1.02)',offset:.7},{opacity:1,transform:'translateY(0) scale(1)'}],{duration:320,easing:'cubic-bezier(.2,.75,.25,1)'});
+  requestAnimationFrame(()=>{if(reminderQueue[0]===reminder&&!bubble.hidden){presentedReminders.add(reminder.id);send({channel:'reminder_ack',id:reminder.id});}});
+}
+function showReminderBubble(reminder, reopen=false){
+  if(!reminder||typeof reminder.id!=='string'||typeof reminder.text!=='string'||reminder.text.length>2000)return;
+  if(presentedReminders.has(reminder.id)&&!reopen){send({channel:'reminder_ack',id:reminder.id});return;}
+  if(reminderQueue.some(item=>item.id===reminder.id))return;
+  reminderQueue.push(reminder);showNextReminder(reminderQueue.length===1);
+}
+$('reminder-bubble-close').onclick=event=>{event.stopPropagation();reminderQueue.shift();showNextReminder();};
+window.addEventListener('resize',positionReminderBubble);
 async function receive(message, generation) {
   if (!connection.current(generation)) return;
   if (message.channel === 'backend_ready') {
@@ -309,6 +335,12 @@ async function receive(message, generation) {
   if(message.channel==='wake_error'){if(!connection.connected)return;wake.error(message);return;}
   if (message.channel === 'backend_closed') { connectionChanged({ generation, state: 'disconnected' }); return; }
   if (!connection.connected) return;
+  if(message.channel==='reminder_due'){
+    const r=message.reminder;
+    if(!r||typeof r.id!=='string'||typeof r.text!=='string'||r.text.length>2000||!Number.isFinite(r.dueAt))return;
+    if(!displayedReminders.has(r.id)){displayedReminders.add(r.id);chat.notice(view.characterId,'⏰ '+r.text);renderUI();}
+    showReminderBubble(r);return;
+  }
   if(message.channel==='work_state') { if(work.receive(message.state)){markVisibleWork();if(message.state.focus==='work')restoreSelectedSource();renderUI();} return; }
   if(message.channel==='work_speech'){
     const e=message.event;
@@ -399,8 +431,9 @@ async function receive(message, generation) {
     send({ channel: 'rpc_error', requestId: message.requestId, ...(scope ? { scope } : {}), error: failure, message: text }, generation);
   }
 }
-window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, displayConfig: config => {
+window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, showReminder: r => showReminderBubble(r,true), displayConfig: config => {
   display.receive(config);
+  positionReminderBubble();
   if (renderer?.ready) renderer.draw();
 }, managementResult };
 window.desktopHost?.subscribe((method, ...args) => window.petBridge[method]?.(...args));
@@ -427,7 +460,7 @@ let pointerInteractive;
 document.addEventListener('pointermove', event => {
   const target = event.target;
   const interactive = Boolean(pointer || $('model-resize').dataset.resizing === 'true'
-    || target.closest?.('#character, #open, #model-resize')
+    || target.closest?.('#character, #open, #model-resize, #reminder-bubble')
     || (!$('drawer').hidden && $('drawer').contains(target)));
   if (interactive !== pointerInteractive) {
     pointerInteractive = interactive;

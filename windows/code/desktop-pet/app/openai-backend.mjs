@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { CodexWindowsConnection } from '../dist/harness/codex-windows.js';
+import { LocalReminders, reminderTime } from './local-reminders.mjs';
 import { readOpenAIConfig, readOpenAIKey } from '../tools/openai-config.mjs';
 import { requestOpenAI, OpenAIRequestError } from '../providers/openai-responses.mjs';
 import { readPresentationCatalog } from '../dist/management/presentation.js';
@@ -29,13 +30,19 @@ let generation = 0, active = null, history = [];
 let queued = Promise.resolve();
 const send = message => process.stdout.write(JSON.stringify(message)+'\n');
 const event = value => send({channel:'event',event:value});
+const reminders = new LocalReminders(resolve(root,'.local/reminders/reminders.json'),{onDue:reminder=>send({channel:'reminder_due',reminder:{id:reminder.id,text:`${reminder.overdue?'补提醒':'时间到了'}：该${reminder.task}了。原定时间：${reminderTime(reminder.dueAt)}（北京时间）。`,dueAt:reminder.dueAt}})});
+await reminders.load();
 send({channel:'backend_ready',bridgeVersion:DESKTOP_BRIDGE_VERSION,characterId:COMPANION_ID,sessionId,
-  introduction:{id:codexMode?'codex-chat':'openai-chat',text:codexMode?`已连接 Codex · ${config.model}，使用已有 ChatGPT 登录。可以进行文字对话；上下文仅保留在本次临时会话，使用 Codex 额度。`:`已连接 OpenAI · ${config.model}。可以进行文字对话；上下文仅保留在本次会话。发送文字将调用 OpenAI API。`}});
+  introduction:{id:codexMode?'codex-chat':'openai-chat',text:(codexMode?`已连接 Codex · ${config.model}，使用已有 ChatGPT 登录，使用 Codex 额度。`:`已连接 OpenAI · ${config.model}，聊天将调用 OpenAI API。`)+`支持文字聊天和本地单次提醒，例如“10分钟后提醒我喝水”。请保持桌宠运行；可发送“查看提醒”或“取消所有提醒”。`}});
 send({channel:'presentation_policy',policy:{modelId:catalog.modelId,revision:0,
   enabledIds:catalog.items.filter(item=>item.availability==='automatic'&&item.defaultEnabled).map(item=>item.id)}});
 const lines = createInterface({input:process.stdin,crlfDelay:Infinity});
+reminders.start();
 lines.on('line', line => {
   let message; try { message=JSON.parse(line); } catch { return; }
+  if(message.channel==='reminder_ack'&&typeof message.id==='string'){
+    const previous=queued;queued=previous.then(()=>reminders.acknowledge(message.id)).catch(()=>{});return;
+  }
   if(message.channel!=='command')return;
   const command=message.command;
   if(command.type==='cancel') {
@@ -57,12 +64,13 @@ lines.on('line', line => {
   const previous = queued;
   queued = (async()=>{
     try {
-      if(codexMode)await previous;
+      await previous;
       if(controller.signal.aborted)return;
       if(command.text.length>16000)throw Error('输入过长，请分段发送（最多 16000 字符）。');
       const input=[...history,{role:'user',content:command.text}];
       const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(180000)]);
-      const text=codexMode?await connection.chat(command.text,signal):await requestOpenAI({key:await readOpenAIKey(root,config),model:config.model,input,signal});
+      const localReply=await reminders.handle(command.text);
+      const text=localReply??(codexMode?await connection.chat(command.text,signal):await requestOpenAI({key:await readOpenAIKey(root,config),model:config.model,input,signal}));
       if(active?.scope!==scope||controller.signal.aborted)return;
       history=[...input,{role:'assistant',content:text,phase:'final_answer'}].slice(-24);
       event({type:'reply',reply:{scope,text,expression}});
@@ -74,4 +82,4 @@ lines.on('line', line => {
     }finally{if(active?.scope===scope)active=null;}
   })();
 });
-lines.on('close',()=>{active?.controller.abort();history=[];void connection?.close();});
+lines.on('close',()=>{active?.controller.abort();history=[];void reminders.close();void connection?.close();});

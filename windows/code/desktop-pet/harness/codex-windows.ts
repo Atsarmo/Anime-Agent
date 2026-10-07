@@ -116,7 +116,7 @@ export class CodexWindowsConnection extends CodexAppConnection {
       web_search: 'disabled', model_reasoning_effort: 'low' };
     for (const name of Object.keys(effective?.config?.mcp_servers ?? {})) overrides[`mcp_servers.${name}.enabled`] = false;
     const started = await this.rpc('thread/start', { cwd, ephemeral: true, sandbox: 'read-only', approvalPolicy: 'never', config: overrides,
-      baseInstructions: '你是中文桌面陪伴助手，只进行自然、简洁的文字聊天。不要调用任何工具、访问文件或操作电脑。你没有语音、长期记忆或定时提醒功能，不能声称已设置提醒或执行任务。' });
+      baseInstructions: '你是中文桌面陪伴助手，进行自然、简洁的文字聊天。不要调用任何工具、访问文件或操作电脑。桌宠由本地程序处理单次提醒，用户可直接发送“10分钟后提醒我喝水”“明天下午3点提醒我喝水”“查看提醒”“取消所有提醒”。提醒按北京时间计算，需保持桌宠运行；关闭或休眠时到期，会在恢复运行后补提醒。你不能自行设置提醒，未收到本地程序实际成功回执不能声称已设置。你没有语音、长期记忆或其他任务执行能力。' });
     if (!uuid(started?.thread?.id ?? '') || started.thread.ephemeral !== true) throw new CodexAppError('incompatible');
     this.chatThread = started.thread.id;
     return { model: typeof started.model === 'string' ? started.model : 'Codex', ephemeral: true };

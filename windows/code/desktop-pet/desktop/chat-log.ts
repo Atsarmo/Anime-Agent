@@ -13,6 +13,7 @@ export class DesktopChatLog {
   draft(role: CharacterId): string { return this.drafts.get(role) ?? ''; }
   setDraft(role: CharacterId, text: string): void { this.drafts.set(role, text); }
   pending(role: CharacterId): boolean { return this.waiting.has(role); }
+  notice(role: CharacterId, text: string): void { this.append(role, { id: ++this.nextId, kind: 'assistant', text }); }
   submit(role: CharacterId, text: string, deferred = false): boolean {
     if (this.pending(role)) return false;
     const row: Row = { id: ++this.nextId, kind: 'user', text, status: 'sending', deferred };
