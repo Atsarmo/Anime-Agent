@@ -43,3 +43,6 @@ id_ed25519*
 *.m4a
 *.mp4
 *.zip
+
+# Locally supplied character packages
+/character/

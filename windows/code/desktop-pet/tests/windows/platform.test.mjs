@@ -6,7 +6,7 @@ import { join, resolve, win32 } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isOutside, isPrivateFileSync, restrictPrivatePathSync } from '../../dist/core/platform-files.js';
 import { assetResponse } from '../../desktop/electron/assets.mjs';
-import { fitDisplay } from '../../desktop/electron/layout.mjs';
+import { fitDisplay, fitStableDisplay } from '../../desktop/electron/layout.mjs';
 import { SqliteProjectIndex } from '../../dist/projects/sqlite-project-index.js';
 import { FinanceCredentials } from '../../dist/management/balance-credentials.js';
 import { WeChatStore } from '../../dist/wechat/store.js';
@@ -129,6 +129,18 @@ test('opening the drawer preserves the model position and keeps all bounds on a 
     assert.ok(open.bounds.x >= screen.x && open.bounds.y >= screen.y);
     assert.ok(open.bounds.x + open.bounds.width <= screen.x + screen.width + 1);
     assert.ok(open.bounds.y + open.bounds.height <= screen.y + screen.height + 1);
+  }
+});
+test('drawer toggle keeps native bounds and character CSS coordinates identical', () => {
+  for (const screen of [{x:0,y:0,width:1920,height:1040}, {x:-1280,y:0,width:1280,height:680}, {x:0,y:0,width:800,height:560}]) {
+    for (const anchor of [{x:screen.x+220,y:screen.y+30}, {x:screen.x+screen.width-220,y:screen.y+screen.height-430}]) {
+      const closed = fitStableDisplay(360, false, screen, anchor);
+      const opened = fitStableDisplay(360, true, screen, closed.anchor);
+      assert.deepEqual(opened.bounds, closed.bounds);
+      for (const key of ['petLeft','petTop','petWidth','modelWidth','modelHeight']) assert.equal(opened.config[key], closed.config[key]);
+      assert.equal(closed.config.drawerHeight, 0);
+      assert.ok(opened.config.drawerHeight > 0);
+    }
   }
 });
 test('management opener checks authenticated backend identity and never sends tokens to remote hosts', async t => {

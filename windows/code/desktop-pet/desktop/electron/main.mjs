@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BackendConnection } from './transport.mjs';
-import { fitDisplay } from './layout.mjs';
+import { fitStableDisplay } from './layout.mjs';
 import { assetResponse } from './assets.mjs';
 import { managementUrl } from '../../tools/management-url.mjs';
 
@@ -13,10 +13,12 @@ const root = resolve(option('--root') || resolve(here, '..'));
 const node = option('--node'), backend = option('--backend');
 if (!node || !backend) throw Error('Use npm run dev or npm start to launch the Windows host.');
 const preview = process.argv.includes('--preview');
+const openaiChat = process.argv.includes('--openai-chat');
+const codexChat = openaiChat && process.env.PET_CHAT_MODE === 'codex';
 const inspect = process.argv.includes('--inspect');
 const smoke = process.argv.includes('--smoke-test');
 app.setName('AAAAGENT');
-app.setPath('userData', resolve(app.getPath('appData'), 'AAAAGENT', smoke ? 'smoke-test' : preview ? 'preview' : 'desktop'));
+app.setPath('userData', resolve(app.getPath('appData'), 'AAAAGENT', smoke ? 'smoke-test' : preview ? 'preview' : codexChat ? 'codex-chat' : openaiChat ? 'openai-chat' : 'desktop'));
 if (!app.requestSingleInstanceLock({ root, preview })) { app.quit(); process.exit(0); }
 protocol.registerSchemesAsPrivileged([{ scheme: 'pet', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 let win, ready = false, voiceRequested = false, wakeRequested = false, panelOpen = false, beforeResize;
@@ -39,8 +41,11 @@ function savePreferences() {
 function layout() {
   if (!win || win.isDestroyed()) return;
   const display = screen.getDisplayNearestPoint({ x: Math.round(anchor.x), y: Math.round(anchor.y) });
-  const fitted = fitDisplay(prefs.width, panelOpen, display.workArea, anchor, prefs.mode);
-  anchor = fitted.anchor; win.setBounds(fitted.bounds); deliver('displayConfig', fitted.config);
+  const fitted = fitStableDisplay(prefs.width, panelOpen, display.workArea, anchor, prefs.mode);
+  anchor = fitted.anchor;
+  const current = win.getBounds();
+  if (['x', 'y', 'width', 'height'].some(key => current[key] !== fitted.bounds[key])) win.setBounds(fitted.bounds);
+  deliver('displayConfig', fitted.config);
 }
 const trusted = event => win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === 'pet://app/index.html';
 const start = () => connection.start(node, [backend], process.env);
@@ -60,6 +65,9 @@ ipcMain.on('pet:shell', (event, value) => {
       ready = true; layout(); deliver('hotkeyConfig', { code: prefs.hotkey }); start(); break;
     case 'panel': panelOpen = value.open === true; layout(); if (panelOpen) win.focus(); break;
     case 'focus': win.focus(); break;
+    case 'pointer_region':
+      if (typeof value.interactive === 'boolean') win.setIgnoreMouseEvents(!value.interactive, { forward: true });
+      break;
     case 'drag':
       if (Number.isFinite(value.dx) && Number.isFinite(value.dy) && Math.abs(value.dx) < 2000 && Math.abs(value.dy) < 2000) {
         anchor.x += value.dx; anchor.y += value.dy; layout(); savePreferences();
@@ -79,6 +87,11 @@ ipcMain.on('pet:shell', (event, value) => {
     case 'reconnect': if (['failed', 'disconnected'].includes(connection.state)) start(); break;
     case 'disconnect': if (value.generation === connection.generation) connection.close(); break;
     case 'open_management':
+      if (openaiChat) {
+        const setupUrl = process.env.PET_OPENAI_SETUP_URL;
+        if (!setupUrl || new URL(setupUrl).hostname !== '127.0.0.1' || new URL(setupUrl).protocol !== 'http:') { deliver('managementResult', {ok:false}); break; }
+        void shell.openExternal(setupUrl).then(() => deliver('managementResult',{ok:true})).catch(() => deliver('managementResult',{ok:false})); break;
+      }
       if (preview) { deliver('managementResult', { ok: false }); break; }
       void managementUrl(process.env.PET_TRIAL_CONFIG).then(url => shell.openExternal(url)).then(() => deliver('managementResult', { ok: true })).catch(() => deliver('managementResult', { ok: false })); break;
     case 'quit': app.quit(); break;
@@ -108,6 +121,7 @@ win = new BrowserWindow({ title: preview ? 'AAAAGENT · Offline preview' : 'AAAA
   frame: false, transparent: true, backgroundColor: '#00000000', alwaysOnTop: true, hasShadow: false, resizable: false, show: !smoke,
   webPreferences: { preload: resolve(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true,
     partition: 'aaaagent-desktop', backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' } });
+win.setIgnoreMouseEvents(true, { forward: true });
 Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'AAAAGENT', submenu: [
   { label: 'Reload', accelerator: 'Ctrl+R', click: () => { connection.close(); ready = false; win.webContents.reload(); } },
   { label: 'Developer tools', accelerator: 'Ctrl+Shift+I', click: () => win.webContents.toggleDevTools() }, { role: 'quit' }
@@ -150,8 +164,17 @@ if (smoke) {
       await new Promise(done => setTimeout(done, 200));
     }
     if (!loaded) throw Error('Renderer or offline backend did not become ready: ' + await win.webContents.executeJavaScript("document.getElementById('status').textContent"));
+    const closedBounds = win.getBounds();
+    const closedModelPosition = await win.webContents.executeJavaScript("(() => { const r=document.getElementById('model').getBoundingClientRect();return {x:r.x,y:r.y}; })()");
+    const stableCanvas = await win.webContents.executeJavaScript("document.getElementById('model').getContext('webgl').getContextAttributes().preserveDrawingBuffer");
+    if (!stableCanvas) throw Error('Transparent model canvas must retain its frame between redraws');
+    const secondaryClickSafe = await win.webContents.executeJavaScript("(() => { const drawer = document.getElementById('drawer'), before = drawer.hidden, character = document.getElementById('character'); for (const type of ['pointerdown', 'pointerup']) character.dispatchEvent(new PointerEvent(type, {button:2, pointerId:7, isPrimary:true, bubbles:true})); return before === drawer.hidden; })()");
+    if (!secondaryClickSafe) throw Error('Secondary click unexpectedly toggled the model drawer');
     await win.webContents.executeJavaScript("document.getElementById('open').click();document.getElementById('text').value='Windows bridge smoke test';document.getElementById('form').requestSubmit();");
     await new Promise(done => setTimeout(done, 400));
+    const openBounds = win.getBounds();
+    const openModelPosition = await win.webContents.executeJavaScript("(() => { const r=document.getElementById('model').getBoundingClientRect();return {x:r.x,y:r.y}; })()");
+    if (JSON.stringify(closedBounds) !== JSON.stringify(openBounds) || JSON.stringify(closedModelPosition) !== JSON.stringify(openModelPosition)) throw Error('Opening the drawer moved the native surface or character');
     const echoed = await win.webContents.executeJavaScript("document.getElementById('reply').textContent.includes('Offline preview received')");
     if (!echoed) throw Error('Text did not complete a backend round trip');
     console.log('WINDOWS_SMOKE_OK: Live2D renderer, isolated preload, backend round trip, panel layout.');

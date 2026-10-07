@@ -1,6 +1,8 @@
 /** Deliberately offline UI fixture. It never imports providers, credentials or private data. */
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { readPresentationCatalog } from '../management/presentation.js';
 import { COMPANION_ID } from '../contracts/character.js';
 import { DESKTOP_BRIDGE_VERSION, type BackendToDesktop, type DesktopToBackend } from '../contracts/desktop-bridge.js';
 const sessionId = randomUUID();
@@ -9,6 +11,9 @@ const expression = { emotion: 'neutral', intensity: 0, delivery: '', gesture: nu
 const send = (message: BackendToDesktop) => process.stdout.write(JSON.stringify(message) + '\n');
 send({ channel: 'backend_ready', bridgeVersion: DESKTOP_BRIDGE_VERSION, characterId: COMPANION_ID, sessionId,
   introduction: { id: 'windows-preview', text: 'Offline development preview · 离线开发预览。可以测试角色、窗口和文字交互；回复为本地回显。语音和控制台需要正式配置。' } });
+const catalog = await readPresentationCatalog(fileURLToPath(new URL('../../../..', import.meta.url)));
+send({ channel: 'presentation_policy', policy: { modelId: catalog.modelId, revision: 0,
+  enabledIds: catalog.items.filter(item => item.availability === 'automatic' && item.defaultEnabled).map(item => item.id) } });
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on('line', line => {
   let message: DesktopToBackend;

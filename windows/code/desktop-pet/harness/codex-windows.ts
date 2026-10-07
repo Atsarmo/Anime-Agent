@@ -18,6 +18,8 @@ export class CodexWindowsConnection extends CodexAppConnection {
   private pending = new Map<string, Pending>();
   private sequence = 0;
   private closing = false;
+  private notifications = new Set<(message: any) => void>();
+  private chatThread: string | undefined;
   constructor(private readonly home: string, private readonly executable?: string, private readonly requestTimeoutMs = 60000, private readonly launcher: Launcher = launch) {
     super(home);
   }
@@ -43,6 +45,7 @@ export class CodexWindowsConnection extends CodexAppConnection {
     throw new CodexAppError('unavailable');
   }
   private fail() {
+    for (const listener of this.notifications) listener({ method: 'connection/closed' });
     for (const waiter of this.pending.values()) { clearTimeout(waiter.timer); waiter.reject(new CodexAppError('unavailable')); }
     this.pending.clear(); this.child = undefined; this.starting = undefined;
   }
@@ -80,6 +83,7 @@ export class CodexWindowsConnection extends CodexAppConnection {
         while ((newline = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
           let message; try { message = JSON.parse(line); } catch { child.kill(); this.fail(); return; }
+          if (message.id === undefined && message.method) { for (const listener of this.notifications) listener(message); continue; }
           if (message.method && message.id !== undefined) {
             // An external client must not silently approve tools or answer user questions.
             if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(message.method))
@@ -101,6 +105,61 @@ export class CodexWindowsConnection extends CodexAppConnection {
   async compatible(): Promise<boolean> {
     try { await this.start(); const auth = await this.rpc('account/read', { refreshToken: false }); return !!auth?.account; }
     catch { return false; }
+  }
+  async openChat(cwd: string): Promise<{ model: string; ephemeral: boolean }> {
+    await this.start();
+    const auth = await this.rpc('account/read', { refreshToken: false });
+    if (auth?.account?.type !== 'chatgpt') throw new Error('请先在 Codex 使用 ChatGPT 登录。');
+    const effective = await this.rpc('config/read', { includeLayers: false });
+    const overrides: Record<string, unknown> = { 'features.shell_tool': false, 'features.apps': false,
+      'features.multi_agent': false, 'features.skill_search': false, 'features.sleep_tool': false,
+      web_search: 'disabled', model_reasoning_effort: 'low' };
+    for (const name of Object.keys(effective?.config?.mcp_servers ?? {})) overrides[`mcp_servers.${name}.enabled`] = false;
+    const started = await this.rpc('thread/start', { cwd, ephemeral: true, sandbox: 'read-only', approvalPolicy: 'never', config: overrides,
+      baseInstructions: '你是中文桌面陪伴助手，只进行自然、简洁的文字聊天。不要调用任何工具、访问文件或操作电脑。你没有语音、长期记忆或定时提醒功能，不能声称已设置提醒或执行任务。' });
+    if (!uuid(started?.thread?.id ?? '') || started.thread.ephemeral !== true) throw new CodexAppError('incompatible');
+    this.chatThread = started.thread.id;
+    return { model: typeof started.model === 'string' ? started.model : 'Codex', ephemeral: true };
+  }
+  async chat(text: string, signal: AbortSignal): Promise<string> {
+    if (!this.chatThread || !text.trim() || text.length > 16000 || signal.aborted) throw new CodexAppError('invalid_target');
+    const threadId = this.chatThread;
+    let turnId: string | undefined;
+    const completed = new Map<string, any>(), replies = new Map<string, string[]>();
+    let resolveReply!: (reply: string) => void, rejectReply!: (error: Error) => void;
+    const result = new Promise<string>((resolve, reject) => { resolveReply = resolve; rejectReply = reject; });
+    // Keep the promise handled if cancellation arrives while turn/start is pending.
+    void result.catch(() => {});
+    const finish = () => {
+      if (!turnId || !completed.has(turnId)) return;
+      const turn = completed.get(turnId), reply = (replies.get(turnId) ?? []).join('\n');
+      if (turn.status === 'completed' && reply.trim()) resolveReply(reply);
+      else rejectReply(new CodexAppError('unknown_delivery'));
+    };
+    const listener = (message: any) => {
+      if (message.method === 'connection/closed') { rejectReply(new CodexAppError('unavailable')); return; }
+      const p = message.params;
+      if (p?.threadId !== threadId) return;
+      if (message.method === 'item/completed' && p.item?.type === 'agentMessage' && p.item.phase !== 'commentary' && typeof p.item.text === 'string') {
+        const values = replies.get(p.turnId) ?? []; values.push(p.item.text); replies.set(p.turnId, values);
+      }
+      if (message.method === 'turn/completed') completed.set(p.turn?.id, p.turn);
+      finish();
+    };
+    let interruption: Promise<any> | undefined;
+    const abort = () => {
+      if (turnId && !interruption) interruption = this.rpc('turn/interrupt', { threadId, turnId }).catch(() => {});
+      rejectReply(new CodexAppError('unknown_delivery'));
+    };
+    this.notifications.add(listener); signal.addEventListener('abort', abort, { once: true });
+    const timeout = setTimeout(abort, 180000);
+    try {
+      const started = await this.rpc('turn/start', { threadId, input: [{ type: 'text', text, text_elements: [] }] });
+      if (!uuid(started?.turn?.id ?? '')) throw new CodexAppError('unknown_delivery');
+      turnId = started.turn.id;
+      if (signal.aborted) abort(); else finish();
+      return await result;
+    } finally { clearTimeout(timeout); this.notifications.delete(listener); signal.removeEventListener('abort', abort); await interruption; }
   }
   override async discover(threadId: string): Promise<{ available: boolean }> {
     if (!uuid(threadId)) throw new CodexAppError('invalid_target');

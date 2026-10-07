@@ -30,7 +30,9 @@ export class JellyfishRenderer extends CubismUserModel {
     this.automaticIds = new Set(); this.policyRevision = -1; this.previewValues = new Map();
   }
   async load() {
-    this.gl = this.canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: true });
+    // Keep the last rendered frame while the transparent window is resized or
+    // recomposited between animation ticks (for example when opening the drawer).
+    this.gl = this.canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: true, preserveDrawingBuffer: true });
     if (!this.gl) throw new Error('这个窗口无法启用 WebGL');
     this.syncViewport();
     const base = new URL(this.options.assetBase ?? 'assets/local-model/', location.href);
@@ -94,8 +96,11 @@ export class JellyfishRenderer extends CubismUserModel {
         if (appearance.has(name)) this.appearanceParameters.add(parameter.Id);
       }
     }
-    const motion = await read(this.settings.getMotionFileName('Idle', 0)); this.idle = this.loadMotion(motion, motion.byteLength, 'Idle'); this.idle.setLoop(true); this.idle.setEffectIds([], []);
-    this.motionParameters = new Set(JSON.parse(new TextDecoder().decode(motion)).Curves.filter(c => c.Target === 'Parameter').map(c => c.Id));
+    this.motionParameters = new Set();
+    if (this.settings.getMotionCount('Idle') > 0) {
+      const motion = await read(this.settings.getMotionFileName('Idle', 0)); this.idle = this.loadMotion(motion, motion.byteLength, 'Idle'); this.idle.setLoop(true); this.idle.setEffectIds([], []);
+      this.motionParameters = new Set(JSON.parse(new TextDecoder().decode(motion)).Curves.filter(c => c.Target === 'Parameter').map(c => c.Id));
+    }
     this.runtimeParameters = new Set([...this.expressionParameters, ...this.motionParameters, ...interactionParameters, 'ParamBodyAngleX', 'ParamEyeLOpen', 'ParamEyeROpen', parameterMap.mouthForm, 'ParamMouthOpenY']);
     for (const id of this.runtimeParameters) { if (!this.parameterIndices.has(id)) throw new Error('动作引用了模型不存在的参数'); this.previewParameters.add(id); this.appearanceParameters.delete(id); }
     for (const [id, value] of this.parameterOverrides) this.set(id, value);
@@ -177,7 +182,7 @@ export class JellyfishRenderer extends CubismUserModel {
     this._model.getModel().parameters.values.set(this.previewMode ? this.previewBaseline : this.defaults);
     const enabled = id => this.previewMode ? this.previewSelection?.id === id : this.automaticIds.has(id);
     const workActive=enabled('proc-work-focus') && (this.previewMode || workFocus && ['idle','error'].includes(view.state));
-    if (enabled('motion-idle-0')) {
+    if (this.idle && enabled('motion-idle-0')) {
       if (this._motionManager.isFinished()) this._motionManager.startMotionPriority(this.idle, false, 1);
       this._motionManager.updateMotion(this._model, delta);
     } else this._motionManager.stopAllMotions();

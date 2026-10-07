@@ -399,7 +399,10 @@ async function receive(message, generation) {
     send({ channel: 'rpc_error', requestId: message.requestId, ...(scope ? { scope } : {}), error: failure, message: text }, generation);
   }
 }
-window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, displayConfig: display.receive, managementResult };
+window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, displayConfig: config => {
+  display.receive(config);
+  if (renderer?.ready) renderer.draw();
+}, managementResult };
 window.desktopHost?.subscribe((method, ...args) => window.petBridge[method]?.(...args));
 $('open').onclick = () => panel(true); $('close').onclick = () => panel(false); $('quit').onclick = () => { wake.disconnect();captureFeedback.stop();void stopPlayback(); stopCapture(); native('shell', { type: 'quit' }); };
 $('text').oninput = () => { clearWorkSpeech();workSpeechBlocked=true;interactionFocusEpoch++; work.input(!!displayedWorkBinding()); chat.setDraft(view.characterId, $('text').value); fitComposer(); };
@@ -420,10 +423,28 @@ $('voice').onclick = () => timedVoiceInput(performance.now(),'voice-button',()=>
 $('stop').onclick = () => command({ type: 'cancel' });
 $('invitation').onclick = () => { if (view.invitation) { const id = view.invitation.id; view.invitation = null; panel(true); command({ type: 'click_invitation', invitationId: id }); } };
 let pointer;
-$('character').onpointerdown = e => { pointer = { x: e.screenX, y: e.screenY, moved: false }; e.currentTarget.setPointerCapture(e.pointerId); };
-$('character').onpointermove = e => { if (!pointer) return; const dx = e.screenX - pointer.x, dy = e.screenY - pointer.y; if (Math.abs(dx) + Math.abs(dy) > 3 || pointer.moved) { pointer.moved = true; native('shell', { type: 'drag', dx, dy }); pointer.x = e.screenX; pointer.y = e.screenY; } };
+let pointerInteractive;
+document.addEventListener('pointermove', event => {
+  const target = event.target;
+  const interactive = Boolean(pointer || $('model-resize').dataset.resizing === 'true'
+    || target.closest?.('#character, #open, #model-resize')
+    || (!$('drawer').hidden && $('drawer').contains(target)));
+  if (interactive !== pointerInteractive) {
+    pointerInteractive = interactive;
+    native('shell', { type: 'pointer_region', interactive });
+  }
+});
+document.addEventListener('pointerleave', () => {
+  if (!pointer && $('model-resize').dataset.resizing !== 'true') {
+    pointerInteractive = false;
+    native('shell', { type: 'pointer_region', interactive: false });
+  }
+});
+$('character').oncontextmenu = e => e.preventDefault();
+$('character').onpointerdown = e => { if (e.button !== 0 || e.isPrimary === false) return; pointer = { id: e.pointerId, x: e.screenX, y: e.screenY, moved: false }; e.currentTarget.setPointerCapture(e.pointerId); };
+$('character').onpointermove = e => { if (!pointer || pointer.id !== e.pointerId) return; const dx = e.screenX - pointer.x, dy = e.screenY - pointer.y; if (Math.abs(dx) + Math.abs(dy) > 3 || pointer.moved) { pointer.moved = true; native('shell', { type: 'drag', dx, dy }); pointer.x = e.screenX; pointer.y = e.screenY; } };
 $('character').onpointercancel = $('character').onlostpointercapture = () => { pointer = null; };
-$('character').onpointerup = () => { if (pointer && !pointer.moved) panel(!panelOpen); pointer = null; };
+$('character').onpointerup = e => { if (e.button !== 0 || !pointer || pointer.id !== e.pointerId) return; if (!pointer.moved) panel(!panelOpen); pointer = null; };
 const editing = target => ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName) || target?.isContentEditable || ['view-full', 'view-half', 'model-resize', 'management'].includes(target?.id);
 document.addEventListener('keydown', e => {
   const receivedAt=performance.now();
@@ -442,10 +463,17 @@ window.addEventListener('pagehide', () => { display.cancel(); connectionChanged(
 window.addEventListener('error', e => report({ type: 'script-error', message: e.message }));
 window.addEventListener('unhandledrejection', e => report({ type: 'promise-error', message: String(e.reason) }));
 renderUI(); native('shell', { type: 'ready' });
-let frame = 0, lastRender = 0;
+let frame = 0;
 try {
   renderer = new JellyfishRenderer($('model'), report); await renderer.load(); applyPresentationPolicy(); renderer.setFraming(display.mode); $('loading').hidden = true;
-  function animate(at) { requestAnimationFrame(animate); if (at - lastRender > 32) { if (view.expireInvitation(Date.now())) renderUI(); const shown=workSpeechView.state==='speaking'?workSpeechView:view;renderer.updateView(shown,voicePhase==='preparing'?'listening':shown.state,work.focused&&shown===view); lastRender = at; frame++; } }
+  // Transparent Electron surfaces can be recomposited on focus and mouse input.
+  // Render each display frame and refill the canvas immediately on those events.
+  const redraw = () => { if (renderer?.ready) renderer.draw(); };
+  window.addEventListener('resize', redraw);
+  window.addEventListener('focus', redraw);
+  document.addEventListener('pointerdown', redraw, true);
+  document.addEventListener('pointerup', redraw, true);
+  function animate() { requestAnimationFrame(animate); if (view.expireInvitation(Date.now())) renderUI(); const shown=workSpeechView.state==='speaking'?workSpeechView:view;renderer.updateView(shown,voicePhase==='preparing'?'listening':shown.state,work.focused&&shown===view); frame++; }
   requestAnimationFrame(animate);
   // Bounded telemetry of model parameters only, never transcript/audio/frame contents.
   let lastTrace = 0;

@@ -1,4 +1,11 @@
 const clamp = (n, low, high) => Math.max(low, Math.min(high, n));
+// Keep a stable native surface when toggling the drawer. Native bounds and
+// renderer CSS updates occur in different processes and cannot move atomically.
+export function fitStableDisplay(width, open, screen, anchor, mode = 'full') {
+  const fitted = fitDisplay(width, true, screen, anchor, mode);
+  if (!open) fitted.config = { ...fitted.config, drawerHeight: 0, placement: 'hidden' };
+  return fitted;
+}
 export function fitDisplay(width, open, screen, anchor, mode = 'full') {
   const sw = Math.max(1, screen.width), sh = Math.max(1, screen.height), aspect = 340 / 360;
   const mw = Math.max(1, Math.min(width, sw - 20, (sh - 36) / aspect)), mh = mw * aspect;

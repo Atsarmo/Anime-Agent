@@ -17,11 +17,19 @@ async function fixture(t, mode='ok') {
    if(m.method==='initialized')return;
    if(m.method==='initialize')return send({id:m.id,result:{platformOs:'windows'}});
    if(m.method==='account/read')return send({id:m.id,result:{account:mode==='unauthenticated'?null:{type:'chatgpt'}}});
+   if(m.method==='config/read')return send({id:m.id,result:{config:{mcp_servers:{test:{enabled:true}}}}});
+   if(m.method==='thread/start')return send({id:m.id,result:{thread:{id:threadId,ephemeral:true},model:'test-model'}});
    if(m.method==='thread/read'||m.method==='thread/resume')return send({id:m.id,result:{thread:{id:mode==='wrong-thread'?'other':threadId,status:{type:mode==='busy'?'active':'idle'},turns:[{id:turnId,status:mode==='interrupted'?'interrupted':'completed',items:[{type:'agentMessage',text:'中文完成'}]}]}}});
    if(m.method==='turn/start'){
     if(mode==='lost')return;
     if(mode==='rejected')return send({id:m.id,error:{code:-1,message:'private server detail'}});
     if(mode==='approval')send({id:'approval',method:'item/commandExecution/requestApproval',params:{}});
+    if(mode==='chat'){
+     send({method:'item/completed',params:{threadId:'other',turnId,item:{type:'agentMessage',text:'wrong'}}});
+     send({method:'item/completed',params:{threadId,turnId,item:{type:'agentMessage',text:'internal',phase:'commentary'}}});
+     send({method:'item/completed',params:{threadId,turnId,item:{type:'agentMessage',text:'中文聊天',phase:'final_answer'}}});
+     send({method:'turn/completed',params:{threadId,turn:{id:turnId,status:'completed'}}});
+    }
     return send({id:m.id,result:{turn:{id:turnId}}});
    }
   });
@@ -38,6 +46,17 @@ test('Windows app-server authenticates, resumes exact target, starts once and re
  const calls=await f.calls();assert.equal(calls.filter(x=>x.method==='initialize').length,1);
  const start=calls.filter(x=>x.method==='turn/start');assert.equal(start.length,1);assert.equal(start[0].params.threadId,threadId);
  assert.equal(start[0].params.input[0].text,'Test 中文');assert.equal('approvalPolicy'in start[0].params,false);
+});
+test('ChatGPT chat creates an isolated ephemeral session and returns only its final message',async t=>{
+ const f=await fixture(t,'chat');
+ assert.deepEqual(await f.connection.openChat('C:/chat'),{model:'test-model',ephemeral:true});
+ assert.equal(await f.connection.chat('你好',new AbortController().signal),'中文聊天');
+ const calls=await f.calls(), start=calls.find(x=>x.method==='thread/start');
+ assert.equal(start.params.ephemeral,true);assert.equal(start.params.sandbox,'read-only');
+ assert.equal(start.params.config['features.shell_tool'],false);
+ assert.equal(start.params.config['mcp_servers.test.enabled'],false);
+ assert.equal(calls.some(x=>x.method==='thread/resume'),false);
+ assert.equal(calls.filter(x=>x.method==='turn/start').length,1);
 });
 for(const mode of ['lost','rejected'])test('Windows send '+mode+' response stays unknown without retry',async t=>{
  const f=await fixture(t,mode);await assert.rejects(f.connection.send(threadId,'test',requestId),e=>e.code==='unknown_delivery');
