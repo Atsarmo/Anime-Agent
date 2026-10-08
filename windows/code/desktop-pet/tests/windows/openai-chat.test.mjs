@@ -9,10 +9,11 @@ import { readOpenAIConfig, readOpenAIKey, configPath } from '../../tools/openai-
 test('Responses request uses the official endpoint, preserves roles and phase, and disables storage', async()=>{
   const key='synthetic.key.for.test',input=[{role:'user',content:'你好'},{role:'assistant',content:'你好呀',phase:'final_answer'},{role:'user',content:'继续'}];
   let calls=0;
-  const text=await requestOpenAI({key,model:'gpt-6-sol',input,fetcher:async(url,options)=>{
+  const text=await requestOpenAI({key,model:'gpt-6-sol',input,characterInstructions:'性格：温柔；语气：简短',fetcher:async(url,options)=>{
     calls++;assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(options.headers.Authorization,'Bearer '+key);
     const body=JSON.parse(options.body);assert.equal(body.store,false);assert.equal(body.stream,false);assert.deepEqual(body.input,input);
     assert.match(body.instructions,/不能声称已设置提醒/);assert.ok(!('enable_thinking' in body));
+    assert.match(body.instructions,/性格：温柔；语气：简短/);
     return Response.json({status:'completed',output:[{type:'reasoning',content:[]},{type:'message',role:'assistant',content:[{type:'output_text',text:'收到'}]}]});
   }});assert.equal(text,'收到');assert.equal(calls,1);
 });

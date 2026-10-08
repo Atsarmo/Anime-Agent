@@ -16,7 +16,8 @@ export interface BridgeMedia { readonly id: string; readonly mimeType: string; r
 // Production capture returns required audio and zero to three actual images.
 // Capture readiness and finish never wait for the camera; historical evaluation has its own frame policy.
 export type BackendToDesktop =
-  | { readonly channel: 'reminder_due'; readonly reminder: { readonly id: string; readonly text: string; readonly dueAt: number } }
+  | { readonly channel: 'character_settings'; readonly name: string; readonly url: string }
+  | { readonly channel: 'reminder_due'; readonly reminder: { readonly id: string; readonly text: string; readonly dueAt: number; readonly name?: string; readonly detail?: string } }
   | import('./wake.js').WakeToDesktop
   | { readonly channel: 'work_speech'; readonly event: import('./desktop-work.js').WorkSpeechEvent }
   | { readonly channel: 'input_route'; readonly scope: TurnScope; readonly route: 'companion' | 'work' }

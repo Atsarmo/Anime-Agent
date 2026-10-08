@@ -1,0 +1,24 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { startCharacterSettings, readCharacter, characterFile, characterInstructions } from '../../tools/character-settings.mjs';
+test('role settings authenticate, reject foreign origins, persist valid fields and reject stale writes',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'pet-role-'));const changed=[];
+ const settings=await startCharacterSettings(root,{onChanged:p=>changed.push(p)});
+ t.after(async()=>{await settings.close();await rm(root,{recursive:true,force:true});});
+ const url=new URL(settings.url),endpoint=url.origin+'/api/character';
+ const headers={Authorization:'Bearer '+url.hash.slice(7),'Content-Type':'application/json'};
+ assert.equal((await fetch(endpoint)).status,401);
+ assert.equal((await fetch(endpoint,{headers:{...headers,Origin:'https://foreign.invalid'}})).status,403);
+ const initial=await(await fetch(endpoint,{headers})).json();
+ const body={...initial.profile,name:'魔王',personality:'有主见、温柔',tone:'简短、轻松',expectedRevision:initial.profile.revision};
+ const saved=await fetch(endpoint,{method:'PUT',headers,body:JSON.stringify(body)});assert.equal(saved.status,200);
+ const profile=(await saved.json()).profile;assert.equal(changed.length,1);
+ assert.equal((await readCharacter(root)).name,'魔王');assert.match(characterInstructions(profile),/语气：简短、轻松/);
+ const persisted=await readFile(characterFile(root),'utf8');assert.ok(!persisted.includes(url.hash.slice(7)));
+ assert.equal((await fetch(endpoint,{method:'PUT',headers,body:JSON.stringify(body)})).status,409);
+ assert.equal((await fetch(endpoint,{method:'PUT',headers,body:JSON.stringify({...body,name:'',expectedRevision:profile.revision})})).status,400);
+ assert.equal((await readCharacter(root)).revision,profile.revision);
+});

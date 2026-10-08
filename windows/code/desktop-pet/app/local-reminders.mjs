@@ -52,7 +52,7 @@ export function parseReminder(raw, now=Date.now()) {
 /** Pending reminders are kept until the renderer acknowledges their display. */
 export class LocalReminders {
   records=[]; lastSent=new Map(); writes=Promise.resolve(); timer=null;
-  constructor(file,{now=Date.now,onDue=()=>{},onError=()=>{}}={}){Object.assign(this,{file,now,onDue,onError});}
+  constructor(file,{now=Date.now,onDue=()=>{},onError=()=>{},onCreated=()=>{}}={}){Object.assign(this,{file,now,onDue,onError,onCreated});}
   async load(){try{const data=JSON.parse(await readFile(this.file,'utf8'));
     if(data.version!==1||!Array.isArray(data.records)||data.records.some(r=>!r||!/^[-\da-f]{36}$/i.test(r.id)||typeof r.task!=='string'||r.task.length>500||!Number.isFinite(r.dueAt)||!['pending','delivered','cancelled'].includes(r.status)))throw Error('invalid reminders');
     this.records=data.records;
@@ -71,7 +71,8 @@ export class LocalReminders {
       const record={id:randomUUID(),task:action.task,dueAt:action.dueAt,status:'pending',createdAt:this.now()};
       this.records=[...this.records.filter(r=>r.status==='pending'),...this.records.filter(r=>r.status!=='pending').slice(-100),record];
       try{await this.persist();}catch{this.records=before;return '提醒保存失败，尚未设置成功。请检查本地文件权限或磁盘空间。';}
-      return `已设置：${reminderTime(record.dueAt)}（北京时间）提醒你${record.task}。\n编号：${record.id.slice(0,8)}。请保持桌宠运行；关闭或休眠期间到期的提醒，会在恢复运行后补提醒。`;
+      try{this.onCreated(record);}catch{}
+      return `已设置：${reminderTime(record.dueAt)}（北京时间）提醒你${record.task}。\n编号：${record.id.slice(0,8)}。`;
     }
     const selected=action.type==='cancelAll'?pending:pending.filter(r=>r.id.startsWith(action.id));
     if(action.type==='cancel'&&selected.length!==1)return '未找到唯一的待提醒编号，请发送“查看提醒”核对。';

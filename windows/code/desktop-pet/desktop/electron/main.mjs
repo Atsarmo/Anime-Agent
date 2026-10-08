@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, protocol, screen, Menu, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, screen, Menu, shell, Tray, nativeImage } from 'electron';
+import { createTrayImage } from './tray-icon.mjs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,16 +18,38 @@ const openaiChat = process.argv.includes('--openai-chat');
 const codexChat = openaiChat && process.env.PET_CHAT_MODE === 'codex';
 const inspect = process.argv.includes('--inspect');
 const smoke = process.argv.includes('--smoke-test');
+let smokeRendererErrors=0;
 app.setName('AAAAGENT');
 app.setPath('userData', resolve(app.getPath('appData'), 'AAAAGENT', smoke ? 'smoke-test' : preview ? 'preview' : codexChat ? 'codex-chat' : openaiChat ? 'openai-chat' : 'desktop'));
 if (!app.requestSingleInstanceLock({ root, preview })) { app.quit(); process.exit(0); }
 protocol.registerSchemesAsPrivileged([{ scheme: 'pet', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 let win, ready = false, voiceRequested = false, wakeRequested = false, panelOpen = false, beforeResize;
-let prefs = { mode: 'full', width: 360, hotkey: null }, anchor, prefsFile, writes = Promise.resolve();
+let tray,trayMenu,characterName='桌宠';
+function updateTrayMenu(){
+  if(!tray||tray.isDestroyed()||!win||win.isDestroyed())return;
+  tray.setToolTip(`${characterName} · 桌宠`);
+  trayMenu=Menu.buildFromTemplate([
+    {label:win.isVisible()?'隐藏桌宠':'显示桌宠',click:()=>{if(win.isVisible())win.hide();else win.showInactive();updateTrayMenu();}},
+    {label:'打开对话',click:()=>{win.show();deliver('openChat');win.focus();}},
+    {label:'角色设置',enabled:Boolean(characterSettingsUrl),click:()=>{if(characterSettingsUrl)void shell.openExternal(characterSettingsUrl).catch(()=>{});}},
+    {label:'抗锯齿',submenu:[['standard','MSAA（原生）'],['enhanced','SSAA（增强）'],['high','SSAA（最高）'],['smaa','SSAA + SMAA（试验）']].map(([level,label])=>({label,type:'radio',checked:prefs.antialiasLevel===level,click:()=>{prefs.antialiasLevel=level;layout();savePreferences();updateTrayMenu();}}))},
+    {type:'separator'},
+    {label:'退出桌宠',click:()=>app.quit()}
+  ]);
+  tray.setContextMenu(trayMenu);
+}
+let prefs = { mode: 'full', width: 360, hotkey: null, antialiasLevel:'enhanced' }, anchor, prefsFile, writes = Promise.resolve();
+let characterSettingsUrl;
 const deliver = (method, ...args) => { if (ready && win && !win.isDestroyed()) win.webContents.send('pet:delivery', method, ...args); };
 const connection = new BackendConnection({
   onState: state => { voiceRequested = wakeRequested = false; deliver('connectionChanged', state); },
   onMessage: (message, generation) => {
+    if(message.channel==='character_settings'&&typeof message.url==='string'){
+      try{const url=new URL(message.url);if(url.hostname==='127.0.0.1'&&url.protocol==='http:')characterSettingsUrl=message.url;}catch{}
+      if(typeof message.name==='string'&&message.name.length<=40)characterName=message.name;
+      updateTrayMenu();
+    }
+    if(message.channel==='reminder_due'&&!smoke&&win&&!win.isVisible())win.showInactive();
     if (message.channel === 'wake_control') wakeRequested = message.enabled === true;
     if (message.channel === 'wake_error') wakeRequested = false;
     if (['capture_finish', 'capture_stop'].includes(message.channel)) voiceRequested = false;
@@ -45,7 +68,7 @@ function layout() {
   anchor = fitted.anchor;
   const current = win.getBounds();
   if (['x', 'y', 'width', 'height'].some(key => current[key] !== fitted.bounds[key])) win.setBounds(fitted.bounds);
-  deliver('displayConfig', fitted.config);
+  deliver('displayConfig', {...fitted.config,antialiasLevel:prefs.antialiasLevel});
 }
 const trusted = event => win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === 'pet://app/index.html';
 const start = () => connection.start(node, [backend], process.env);
@@ -73,6 +96,7 @@ ipcMain.on('pet:shell', (event, value) => {
         anchor.x += value.dx; anchor.y += value.dy; layout(); savePreferences();
       } break;
     case 'set_display': if (['full', 'half'].includes(value.mode)) { prefs.mode = value.mode; layout(); savePreferences(); } break;
+    case 'set_antialias': if(['standard','enhanced','high','smaa'].includes(value.level)){prefs.antialiasLevel=value.level;layout();savePreferences();updateTrayMenu();}break;
     case 'resize_model':
       if (value.phase === 'begin') beforeResize ??= prefs.width;
       else if (beforeResize !== undefined) {
@@ -87,6 +111,7 @@ ipcMain.on('pet:shell', (event, value) => {
     case 'reconnect': if (['failed', 'disconnected'].includes(connection.state)) start(); break;
     case 'disconnect': if (value.generation === connection.generation) connection.close(); break;
     case 'open_management':
+      if(characterSettingsUrl){void shell.openExternal(characterSettingsUrl).then(()=>deliver('managementResult',{ok:true})).catch(()=>deliver('managementResult',{ok:false}));break;}
       if (openaiChat) {
         const setupUrl = process.env.PET_OPENAI_SETUP_URL;
         if (!setupUrl || new URL(setupUrl).hostname !== '127.0.0.1' || new URL(setupUrl).protocol !== 'http:') { deliver('managementResult', {ok:false}); break; }
@@ -99,6 +124,8 @@ ipcMain.on('pet:shell', (event, value) => {
 });
 ipcMain.on('pet:diagnostic', (event, value) => {
   if (!trusted(event) || !value) return;
+  if(smoke&&['model-error','script-error','promise-error'].includes(value.type))smokeRendererErrors++;
+  if(smoke&&value.type==='model-smaa-unavailable')process.stderr.write(`SMAA initialization: ${value.reason}\n`);
   // Don't copy arbitrary renderer text, chat or media into diagnostic logs.
   if (['model-ready', 'model-error', 'script-error', 'promise-error'].includes(value.type)) process.stderr.write(`Renderer: ${value.type}\n`);
 });
@@ -113,6 +140,7 @@ try {
   if (['full', 'half'].includes(saved.mode)) prefs.mode = saved.mode;
   if (Number.isFinite(saved.width)) prefs.width = Math.max(220, Math.min(720, saved.width));
   if (validHotkey(saved.hotkey)) prefs.hotkey = saved.hotkey;
+  if(['standard','enhanced','high','smaa'].includes(saved.antialiasLevel))prefs.antialiasLevel=saved.antialiasLevel;
   if (Number.isFinite(saved.anchor?.x) && Number.isFinite(saved.anchor?.y)) anchor = saved.anchor;
 } catch {}
 const area = screen.getPrimaryDisplay().workArea;
@@ -122,6 +150,13 @@ win = new BrowserWindow({ title: preview ? 'AAAAGENT · Offline preview' : 'AAAA
   webPreferences: { preload: resolve(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true,
     partition: 'aaaagent-desktop', backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' } });
 win.setIgnoreMouseEvents(true, { forward: true });
+try{
+  tray=new Tray(createTrayImage(nativeImage));
+  win.setSkipTaskbar(true);
+  updateTrayMenu();
+  tray.on('click',()=>{win.showInactive();updateTrayMenu();});
+  win.on('show',updateTrayMenu);win.on('hide',updateTrayMenu);
+}catch{tray?.destroy();tray=undefined;win.setSkipTaskbar(false);process.stderr.write('Tray unavailable; keeping taskbar access.\n');}
 Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'AAAAGENT', submenu: [
   { label: 'Reload', accelerator: 'Ctrl+R', click: () => { connection.close(); ready = false; win.webContents.reload(); } },
   { label: 'Developer tools', accelerator: 'Ctrl+Shift+I', click: () => win.webContents.toggleDevTools() }, { role: 'quit' }
@@ -150,6 +185,7 @@ app.on('before-quit', event => {
   void connection.close().then(() => writes).finally(() => { quitDrained = true; app.quit(); });
 });
 app.on('window-all-closed', () => app.quit());
+app.on('will-quit',()=>{tray?.destroy();tray=undefined;});
 layout();
 await win.loadURL('pet://app/index.html');
 if (inspect) win.webContents.openDevTools({ mode: 'detach' });
@@ -164,10 +200,52 @@ if (smoke) {
       await new Promise(done => setTimeout(done, 200));
     }
     if (!loaded) throw Error('Renderer or offline backend did not become ready: ' + await win.webContents.executeJavaScript("document.getElementById('status').textContent"));
+    if(option('--model-screenshot')){
+      await win.webContents.executeJavaScript("document.getElementById('view-half').click()");
+      await new Promise(done=>setTimeout(done,300));
+      const rectangle=await win.webContents.executeJavaScript("(() => {const r=document.getElementById('model').getBoundingClientRect();return {x:Math.floor(r.x),y:Math.floor(r.y),width:Math.ceil(r.width),height:Math.ceil(r.height)};})()");
+      await writeFile(resolve(option('--model-screenshot')),(await win.webContents.capturePage(rectangle)).toPNG());
+    }
+    if(!tray||tray.isDestroyed())throw Error('Native tray was not created');
+    if(createTrayImage(nativeImage).isEmpty())throw Error('Tray icon is empty');
+    win.showInactive();updateTrayMenu();
+    trayMenu.items[0].click();if(win.isVisible())throw Error('Tray hide did not hide the pet');
+    tray.emit('click');if(!win.isVisible())throw Error('Tray click did not restore the pet');
     const closedBounds = win.getBounds();
     const closedModelPosition = await win.webContents.executeJavaScript("(() => { const r=document.getElementById('model').getBoundingClientRect();return {x:r.x,y:r.y}; })()");
     const stableCanvas = await win.webContents.executeJavaScript("document.getElementById('model').getContext('webgl').getContextAttributes().preserveDrawingBuffer");
     if (!stableCanvas) throw Error('Transparent model canvas must retain its frame between redraws');
+    const originalAntialias=prefs.antialiasLevel;
+    await win.webContents.executeJavaScript("document.getElementById('antialias-level').value='standard';document.getElementById('antialias-level').dispatchEvent(new Event('change',{bubbles:true}));");
+    await new Promise(done=>setTimeout(done,200));
+    const standardWidth=await win.webContents.executeJavaScript("document.getElementById('model').width");
+    const msaa=await win.webContents.executeJavaScript("(() => {const canvas=document.getElementById('model'),gl=canvas.getContext('webgl'),previous=gl.getParameter(gl.FRAMEBUFFER_BINDING);gl.bindFramebuffer(gl.FRAMEBUFFER,null);const result={antialias:gl.getContextAttributes().antialias,samples:gl.getParameter(gl.SAMPLES),sampleBuffers:gl.getParameter(gl.SAMPLE_BUFFERS),width:canvas.width,cssWidth:canvas.clientWidth,dpr:devicePixelRatio};gl.bindFramebuffer(gl.FRAMEBUFFER,previous);return result;})()");
+    console.log('MSAA_CHECK: '+JSON.stringify(msaa));
+    if(Math.abs(msaa.width-msaa.cssWidth*msaa.dpr)>1)throw Error('Native MSAA still uses extra supersampling');
+    await win.webContents.executeJavaScript("document.getElementById('antialias-level').value='high';document.getElementById('antialias-level').dispatchEvent(new Event('change',{bubbles:true}));");
+    await new Promise(done=>setTimeout(done,300));
+    const improved=await win.webContents.executeJavaScript(`document.getElementById('model').width>=${standardWidth} && (devicePixelRatio>=4 || document.getElementById('model').width>${standardWidth})`);
+    if(!improved||prefs.antialiasLevel!=='high')throw Error('Antialias control did not change the renderer quality');
+    await writes;
+    if(JSON.parse(await readFile(prefsFile,'utf8')).antialiasLevel!=='high')throw Error('Antialias preference was not saved');
+    await win.webContents.executeJavaScript("document.getElementById('antialias-level').value='smaa';document.getElementById('antialias-level').dispatchEvent(new Event('change',{bubbles:true}));");
+    await new Promise(done=>setTimeout(done,400));
+    const smaaCheck=await win.webContents.executeJavaScript(`(() => {
+      const canvas=document.getElementById('model'),gl=canvas.getContext('webgl'),old=gl.getParameter(gl.FRAMEBUFFER_BINDING);
+      gl.bindFramebuffer(gl.FRAMEBUFFER,null);const pixels=new Uint8Array(canvas.width*canvas.height*4);
+      gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);gl.bindFramebuffer(gl.FRAMEBUFFER,old);
+      let visible=0,transparent=0,halo=0;for(let i=0;i<pixels.length;i+=4){if(pixels[i+3])visible++;else transparent++;if(Math.max(pixels[i],pixels[i+1],pixels[i+2])>pixels[i+3]+1)halo++;}
+      return {state:canvas.dataset.smaa,visible,transparent,halo,error:gl.getError()};
+    })()`);
+    console.log('SMAA_CHECK: '+JSON.stringify(smaaCheck));
+    if(smaaCheck.state!=='active'||!smaaCheck.visible||!smaaCheck.transparent||smaaCheck.halo||smaaCheck.error)throw Error('SMAA did not preserve the transparent premultiplied model');
+    if(option('--smaa-screenshot')){
+      const rectangle=await win.webContents.executeJavaScript("(() => {const r=document.getElementById('model').getBoundingClientRect();return {x:Math.floor(r.x),y:Math.floor(r.y),width:Math.ceil(r.width),height:Math.ceil(r.height)};})()");
+      await writeFile(resolve(option('--smaa-screenshot')),(await win.webContents.capturePage(rectangle)).toPNG());
+    }
+    await writes;if(JSON.parse(await readFile(prefsFile,'utf8')).antialiasLevel!=='smaa')throw Error('SMAA preference was not saved');
+    prefs.antialiasLevel=originalAntialias;layout();savePreferences();updateTrayMenu();
+    if(JSON.stringify(closedBounds)!==JSON.stringify(win.getBounds()))throw Error('Antialias change moved the native surface');
     const secondaryClickSafe = await win.webContents.executeJavaScript("(() => { const drawer = document.getElementById('drawer'), before = drawer.hidden, character = document.getElementById('character'); for (const type of ['pointerdown', 'pointerup']) character.dispatchEvent(new PointerEvent(type, {button:2, pointerId:7, isPrimary:true, bubbles:true})); return before === drawer.hidden; })()");
     if (!secondaryClickSafe) throw Error('Secondary click unexpectedly toggled the model drawer');
     await win.webContents.executeJavaScript("document.getElementById('open').click();document.getElementById('text').value='Windows bridge smoke test';document.getElementById('form').requestSubmit();");
@@ -197,6 +275,9 @@ if (smoke) {
     await win.webContents.executeJavaScript("document.getElementById('reminder-bubble-close').click()");
     if(!await win.webContents.executeJavaScript("document.getElementById('reminder-bubble').hidden"))throw Error('Dismiss did not hide the reminder bubble');
     deliver('showReminder',reminder.reminder);
+    if(smokeRendererErrors)throw Error(`Renderer reported ${smokeRendererErrors} errors`);
+    const modelVisible=await win.webContents.executeJavaScript("(() => {const c=document.getElementById('model'),gl=c.getContext('webgl'),pixels=new Uint8Array(c.width*c.height*4);gl.readPixels(0,0,c.width,c.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);for(let i=3;i<pixels.length;i+=4)if(pixels[i]>0)return true;return false;})()");
+    if(!modelVisible)throw Error('Model canvas is blank');
     console.log('WINDOWS_SMOKE_OK: Live2D renderer, isolated preload, backend round trip, panel layout, reminder display and deduplication.');
     if (option('--screenshot')) {
       win.showInactive();

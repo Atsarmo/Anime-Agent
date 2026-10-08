@@ -49,10 +49,11 @@ test('Windows app-server authenticates, resumes exact target, starts once and re
 });
 test('ChatGPT chat creates an isolated ephemeral session and returns only its final message',async t=>{
  const f=await fixture(t,'chat');
- assert.deepEqual(await f.connection.openChat('C:/chat'),{model:'test-model',ephemeral:true});
+ assert.deepEqual(await f.connection.openChat('C:/chat','性格：温柔；语气：简短'),{model:'test-model',ephemeral:true});
  assert.equal(await f.connection.chat('你好',new AbortController().signal),'中文聊天');
  const calls=await f.calls(), start=calls.find(x=>x.method==='thread/start');
  assert.equal(start.params.ephemeral,true);assert.equal(start.params.sandbox,'read-only');
+ assert.match(start.params.baseInstructions,/性格：温柔；语气：简短/);
  assert.equal(start.params.config['features.shell_tool'],false);
  assert.equal(start.params.config['mcp_servers.test.enabled'],false);
  assert.equal(calls.some(x=>x.method==='thread/resume'),false);

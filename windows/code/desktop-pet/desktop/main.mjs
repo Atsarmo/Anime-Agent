@@ -25,6 +25,9 @@ const workSpeechView=new DesktopViewState();
 let workNotice=null,workSpeechBlocked=false,backendSessionId=null;
 const spokenNotices=new Set();
 const chat = new DesktopChatLog();
+let companionLabel=COMPANION_LABEL,hasCharacterSettings=false;
+let antialiasLevel='enhanced';
+$('antialias-level').onchange=()=>native('shell',{type:'set_antialias',level:$('antialias-level').value});
 const captureFeedback=new CaptureFeedback($);let captureFeedbackToken;
 let wakeFeedbackToken,wakeRequestId=null,wakeUI={phase:'off',enabled:false};
 const wakeLabels={connecting:'连接中',waiting:'等待唤醒',listening:'正在听',submitting:'正在提交',replying:'等待唤醒'};
@@ -63,7 +66,7 @@ let bindingKey = false;
 let managementOpening = false;
 function managementResult(result) {
   if (!managementOpening || typeof result?.ok !== 'boolean') return;
-  managementOpening = false; $('management').disabled = false; $('management').textContent = '控制台';
+  managementOpening = false; $('management').disabled = false; $('management').textContent = hasCharacterSettings?'角色设置':'控制台';
   $('management-notice').hidden = result.ok;
   $('management-notice').textContent = result.ok ? '' : '暂时无法打开控制台，请确认桌宠服务已启动后重试。';
 }
@@ -123,7 +126,7 @@ function renderUI() {
   const rows = chat.rows(view.characterId).map(row => {
     const item = document.createElement('div'); item.className = `chat-row ${row.kind}`;item.dataset.rowId=String(row.id);
     const label = document.createElement('span'); label.className = 'chat-label';
-    label.textContent = row.kind === 'user' ? `${row.sourceLabel??'你'}${row.status === 'sending' ? ' · 发送中' : row.status === 'failed' ? ' · 未送达' : ''}` : COMPANION_LABEL;
+    label.textContent = row.kind === 'user' ? `${row.sourceLabel??'你'}${row.status === 'sending' ? ' · 发送中' : row.status === 'failed' ? ' · 未送达' : ''}` : companionLabel;
     const text = document.createElement('div'); text.textContent = row.text;
     item.append(label, text);
     if(row.kind==='user'&&row.text.length>140){const expanded=expandedInputs.has(row.id);text.className=expanded?'input-original':'input-original input-original-preview';const more=document.createElement('button');more.type='button';more.className='input-full-toggle';more.textContent=expanded?'收起全文':'查看输入全文';more.setAttribute('aria-expanded',String(expanded));more.onclick=()=>{if(expanded)expandedInputs.delete(row.id);else expandedInputs.add(row.id);preserveReading=true;lastUI='';renderUI();};item.append(more);}
@@ -298,7 +301,9 @@ function showNextReminder(animate=true){
   bubble.getAnimations().forEach(animation=>animation.cancel());
   if(!reminder){bubble.hidden=true;return;}
   $('reminder-bubble-text').textContent=reminder.text;
-  $('reminder-bubble-label').textContent=`⏰ 提醒${reminderQueue.length>1?' · '+reminderQueue.length+'条':''}`;
+  $('reminder-bubble-label').textContent=`${reminder.name||companionLabel}${reminderQueue.length>1?' · '+reminderQueue.length+'条':''}`;
+  $('reminder-bubble-detail').hidden=!reminder.detail;
+  $('reminder-bubble-detail').textContent=reminder.detail||'';
   bubble.hidden=false;positionReminderBubble();
   if(animate&&!matchMedia('(prefers-reduced-motion: reduce)').matches)bubble.animate([{opacity:0,transform:'translateY(8px) scale(.9)'},{opacity:1,transform:'translateY(-2px) scale(1.02)',offset:.7},{opacity:1,transform:'translateY(0) scale(1)'}],{duration:320,easing:'cubic-bezier(.2,.75,.25,1)'});
   requestAnimationFrame(()=>{if(reminderQueue[0]===reminder&&!bubble.hidden){presentedReminders.add(reminder.id);send({channel:'reminder_ack',id:reminder.id});}});
@@ -335,6 +340,12 @@ async function receive(message, generation) {
   if(message.channel==='wake_error'){if(!connection.connected)return;wake.error(message);return;}
   if (message.channel === 'backend_closed') { connectionChanged({ generation, state: 'disconnected' }); return; }
   if (!connection.connected) return;
+  if(message.channel==='character_settings'&&typeof message.name==='string'&&message.name.trim()&&message.name.length<=40){
+    companionLabel=message.name;hasCharacterSettings=true;
+    document.querySelector('.panel-title strong').textContent=companionLabel;
+    $('management').textContent='角色设置';$('management').title='配置角色性格与语气';$('management').setAttribute('aria-label','配置角色性格与语气');
+    lastUI='';renderUI();return;
+  }
   if(message.channel==='reminder_due'){
     const r=message.reminder;
     if(!r||typeof r.id!=='string'||typeof r.text!=='string'||r.text.length>2000||!Number.isFinite(r.dueAt))return;
@@ -431,8 +442,11 @@ async function receive(message, generation) {
     send({ channel: 'rpc_error', requestId: message.requestId, ...(scope ? { scope } : {}), error: failure, message: text }, generation);
   }
 }
-window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, showReminder: r => showReminderBubble(r,true), displayConfig: config => {
+window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, openChat:()=>panel(true), showReminder: r => showReminderBubble(r,true), displayConfig: config => {
   display.receive(config);
+  if(['standard','enhanced','high','smaa'].includes(config.antialiasLevel)){
+    antialiasLevel=config.antialiasLevel;$('antialias-level').value=antialiasLevel;renderer?.setAntialiasLevel(antialiasLevel);
+  }
   positionReminderBubble();
   if (renderer?.ready) renderer.draw();
 }, managementResult };
@@ -498,7 +512,7 @@ window.addEventListener('unhandledrejection', e => report({ type: 'promise-error
 renderUI(); native('shell', { type: 'ready' });
 let frame = 0;
 try {
-  renderer = new JellyfishRenderer($('model'), report); await renderer.load(); applyPresentationPolicy(); renderer.setFraming(display.mode); $('loading').hidden = true;
+  renderer = new JellyfishRenderer($('model'), report,{antialiasLevel}); await renderer.load(); applyPresentationPolicy(); renderer.setFraming(display.mode); $('loading').hidden = true;
   // Transparent Electron surfaces can be recomposited on focus and mouse input.
   // Render each display frame and refill the canvas immediately on those events.
   const redraw = () => { if (renderer?.ready) renderer.draw(); };
