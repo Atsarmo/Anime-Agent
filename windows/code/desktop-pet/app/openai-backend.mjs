@@ -12,7 +12,7 @@ import { ReminderVoice } from './reminder-voice.mjs';
 import { readCharacter, characterInstructions, startCharacterSettings } from '../tools/character-settings.mjs';
 import { readVoice, synthesizeVoice } from '../tools/voice-settings.mjs';
 import { VoiceChunks } from './voice-chunks.mjs';
-import { bilingualInstructions, BilingualSentences, localBilingualPrompt } from './bilingual-speech.mjs';
+import { bilingualInstructions, BilingualSentences, groupBilingualSpeech, localBilingualPrompt } from './bilingual-speech.mjs';
 import { readOpenAIConfig, readOpenAIKey } from '../tools/openai-config.mjs';
 import { requestOpenAI, OpenAIRequestError } from '../providers/openai-responses.mjs';
 import { readPresentationCatalog } from '../dist/management/presentation.js';
@@ -146,11 +146,11 @@ lines.on('line', line => {
           const stream=new VoiceChunks(controller.signal);
           const done=generationQueue.then(async()=>{
             if(failed||controller.signal.aborted||active?.scope!==scope){stream.end();return;}
-            try{await synthesizeVoice({...voiceConfig,textLanguage:'ja'},ja,controller.signal,{root,onChunk:audio=>stream.push(audio)});}catch{failed=true;}finally{stream.end();}
+            try{const audio=await synthesizeVoice({...voiceConfig,textLanguage:'ja'},ja,controller.signal,{root});stream.push(audio);}catch{failed=true;}finally{stream.end();}
           });
           const job={stream,done};jobs.set(index,job);generationQueue=done;return job;
         };
-        const sentences=new BilingualSentences((sentence,index)=>{
+        const queueSpeech=(sentence,index)=>{
           if(controller.signal.aborted||active?.scope!==scope)return;
           const audioJob=prepare(sentence.ja,index);
           synthesis=synthesis.then(async()=>{
@@ -160,7 +160,8 @@ lines.on('line', line => {
             }
             }catch{failed=true;}
           });
-        },prepare);
+        };
+        const sentences=new BilingualSentences();
         let raw;
         try{
           raw=codexMode?await connection.chat(modelText,signal,delta=>sentences.push(delta)):await requestOpenAI({key:await readOpenAIKey(root,config),model:config.model,input:modelInput,signal,characterInstructions:chatInstructions()});
@@ -169,10 +170,12 @@ lines.on('line', line => {
           const verified=new BilingualSentences();verified.push(raw);verified.finish();
           if(JSON.stringify(verified.items)!==JSON.stringify(items))throw Error('双语回复发生变化');
           if(controller.signal.aborted||active?.scope!==scope)return;
+          const speechGroups=groupBilingualSpeech(items);
+          speechGroups.forEach(queueSpeech);
           history=[...input,{role:'assistant',content:raw,phase:'final_answer'}].slice(-24);
           await synthesis;
           if(controller.signal.aborted||active?.scope!==scope)return;
-          if(failed)event({type:'reply',reply:{scope,text:localReply??items.map(s=>s.zh).join('\n'),expression}});
+          if(failed)event({type:'reply',reply:{scope,text:localReply??speechGroups.map(s=>s.zh).join('\n\n'),expression}});
           event({type:'presentation',presentation:{scope,state:'idle',expression,mouth:0}});
           if(failed)send({channel:'speech_error',scope,message:'日语语音未能及时完成，先看中文字幕吧。'});
         }catch(error){const cancelled=controller.signal.aborted;controller.abort();await synthesis;if(active?.scope===scope){send({channel:'speech_cancel',scope});event({type:'presentation',presentation:{scope,state:'idle',expression,mouth:0}});if(!cancelled){if(sentences.items.length)event({type:'reply',reply:{scope,text:localReply??sentences.items.map(s=>s.zh).join('\n'),expression}});send({channel:'speech_error',scope,message:error?.reason==='timeout'?'回复连接超时，这一轮已停止。连接恢复后可以重新发送。':'回复连接中断或双语内容不完整，已停止等待，请重新发送。'});}}}finally{await generationQueue;for(const job of jobs.values())job.stream.dispose();}

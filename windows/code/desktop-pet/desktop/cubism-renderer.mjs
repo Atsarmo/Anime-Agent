@@ -2,6 +2,7 @@ import {ssaaSize,GpuTimer} from './ssaa.mjs';
 import { InteractionMotion } from './interaction-motion.mjs';
 import { normalizePresentationIntent } from '../contracts/presentation.ts';
 import { ModelFeather } from './model-feather.mjs';
+import {defaultFraming,validateFraming,framingTransform} from './model-framing.mjs';
 import presetCatalog from './assets/local-model/presets.json';
 import parameterMap from './config/parameter-map.json';
 // Application adapter over the official SDK; SDK owns deformation, physics, blending and WebGL rendering.
@@ -50,9 +51,15 @@ export class JellyfishRenderer extends CubismUserModel {
     for (let i = 0; i < this.settings.getTextureCount(); i++) {
       const img = new Image(); img.src = new URL(this.settings.getTextureFileName(i), base).href; await img.decode();
       if (Math.max(img.width, img.height) > this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE)) throw new Error('设备不支持这张模型纹理的尺寸');
+      let image=img;
+      if(this.options.textureMaxSize&&Math.max(img.width,img.height)>this.options.textureMaxSize){
+        const ratio=this.options.textureMaxSize/Math.max(img.width,img.height),small=document.createElement('canvas');
+        small.width=Math.max(1,Math.round(img.width*ratio));small.height=Math.max(1,Math.round(img.height*ratio));
+        small.getContext('2d').drawImage(img,0,0,small.width,small.height);image=small;
+      }
       const gl = this.gl, tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-      const mipmapped=(img.width&(img.width-1))===0&&(img.height&(img.height-1))===0;
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      const mipmapped=(image.width&(image.width-1))===0&&(image.height&(image.height-1))===0;
       if(mipmapped)gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmapped?gl.LINEAR_MIPMAP_LINEAR:gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -251,6 +258,11 @@ export class JellyfishRenderer extends CubismUserModel {
     if (mode === 'full') this.feather?.releaseTexture();
     this.framing = mode; this.syncViewport(true);
   }
+  setFramingProfile(profile){
+    this.framingProfile=validateFraming(profile);
+    if(this.ready){this.syncViewport(true);this.draw();}
+    this.report({type:'model-framing',mode:this.framing,...this.framingProfile[this.framing]});
+  }
   setSsaaSamples(samples){
     if(!Number.isInteger(samples)||samples<0||samples>64||samples===this.ssaaSamples)return;
     this.ssaaSamples=samples;if(this.ready){this.syncViewport(true);this.draw();}
@@ -271,10 +283,11 @@ export class JellyfishRenderer extends CubismUserModel {
       this.setRenderTargetSize(width, height);
     }
     if (!this._modelMatrix) return;
-    const zoom = this.framing === 'half' ? 3.2 : 1;
+    const transform=framingTransform(this.framing,this.framingProfile??defaultFraming),zoom=transform.zoom;
     this.projection = new CubismMatrix44();
     this.projection.scale(height / width * zoom, zoom); this.projection.multiplyByMatrix(this._modelMatrix);
-    if (this.framing === 'half') this.projection.translateY(-1.35);
+    this.projection.translateX(this.projection.getTranslateX()+transform.x);
+    this.projection.translateY(this.projection.getTranslateY()+transform.y);
   }
   draw() {
     this.syncViewport();

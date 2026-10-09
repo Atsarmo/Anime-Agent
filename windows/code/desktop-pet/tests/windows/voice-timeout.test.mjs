@@ -60,3 +60,14 @@ test('voice loading also has a deadline and releases its unresponsive warm-up',a
   await assert.rejects(synthesizeEngine(f.root,f.config,'こんにちは',undefined,()=>{},{timeoutMs:350}),/等待过久/);
   assert.equal(synthesis,0); assert.equal(f.shutdowns(),1);
 });
+
+test('paragraph playback receives the complete WAV after synthesis, without partial network chunks',async t=>{
+ const wav=Buffer.alloc(80);wav.write('RIFF');wav.write('WAVE',8);
+ let complete=false;
+ const f=await fixture(t,(_req,res)=>{
+  res.write(wav.subarray(0,44));
+  setTimeout(()=>{complete=true;res.end(wav.subarray(44));},40);
+ });
+ const audio=await synthesizeEngine(f.root,f.config,'お兄ちゃん、気をつけてね。帰ったらまた話そう。',undefined,undefined,{timeoutMs:1000});
+ assert.equal(complete,true);assert.deepEqual(audio,wav);assert.equal(f.shutdowns(),0);
+});

@@ -78,13 +78,17 @@ class FishEngine:
         original_init=semantic.init_model
         def init_short_context(*argv,**kwargs):
             loaded,decode=original_init(*argv,**kwargs)
-            loaded.config.max_seq_len=min(4096,loaded.config.max_seq_len)
+            from fish_context import limit_context
+            limit_context(loaded)
             if finetuned:
                 from fish_adapter import merge_fast_adapter
                 selection=json.loads((LAB/'fish-adapter.json').read_text(encoding='utf-8'))
                 checkpoint=Path(selection['checkpoint']).resolve()
                 if not checkpoint.is_relative_to(LAB):raise ValueError('Fish adapter must be stored in the local voice lab')
                 merge_fast_adapter(loaded,torch.load(checkpoint,map_location='cpu',weights_only=True))
+            # Release the old 32k attention mask and temporary adapter buffers
+            # before loading the audio codec or capturing CUDA graphs.
+            torch.cuda.empty_cache()
             if use_graph:
                 from fish_acceleration import CudaTokenDecoder
                 self.token_decoder=CudaTokenDecoder(decode)
@@ -94,12 +98,16 @@ class FishEngine:
         try:queue=semantic.launch_thread_safe_queue(checkpoint_path=str(model),device='cuda',precision=torch.bfloat16,compile=False)
         finally:semantic.init_model=original_init
         decoder=load_model('modded_dac_vq',str(model/'codec.pth'),device='cuda')
+        from fish_codec import compact_codec
+        compact_codec(decoder)
+        torch.cuda.empty_cache()
         self.model=TTSInferenceEngine(llama_queue=queue,decoder_model=decoder,precision=torch.bfloat16,compile=False)
     @property
     def acceleration(self):return getattr(getattr(self,'token_decoder',None),'mode','eager')
     def generate(self,text,speed,expression='natural'):
         from fish_expression import expression_text
-        spoken=expression_text(text,expression)
+        from fish_pacing import punctuation_pauses
+        spoken=expression_text(punctuation_pauses(text),expression)
         cached=self.audio_cache.get((text,speed,expression))
         if cached is not None:
             yield from cached
@@ -112,8 +120,8 @@ class FishEngine:
             if result.code=='segment' or result.code=='final' and not emitted:
                 rate,audio=result.audio;emitted=True
                 if speed!=1:
-                    import librosa
-                    audio=librosa.effects.time_stretch(np.asarray(audio),rate=speed)
+                    from fish_tempo import adjust_tempo
+                    audio=adjust_tempo(rate,audio,speed,LAB/'bin/ffmpeg.exe')
                 frames.append((rate,np.asarray(audio)))
                 yield rate,audio
         self.audio_cache.put((text,speed,expression),frames)

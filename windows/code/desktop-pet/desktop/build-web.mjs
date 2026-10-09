@@ -8,3 +8,5 @@ await build({ entryPoints: [root + 'main.mjs'], bundle: true, format: 'esm', pla
 await copyFile(new URL('../media/recorder-worklet.mjs', import.meta.url), new URL('./build/recorder-worklet.js', import.meta.url));
 
 await copyFile(new URL('../media/wake/recorder-worklet.mjs', import.meta.url), new URL('./build/wake-recorder-worklet.js', import.meta.url));
+
+await import('./build-framing-editor.mjs');

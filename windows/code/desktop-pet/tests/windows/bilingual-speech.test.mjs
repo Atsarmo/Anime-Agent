@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BilingualSentences, localBilingualPrompt } from '../../app/bilingual-speech.mjs';
+import { BilingualSentences, groupBilingualSpeech, localBilingualPrompt } from '../../app/bilingual-speech.mjs';
 test('only complete paired sentences are emitted from fragmented model output',()=>{
  const emitted=[],parser=new BilingualSentences((s,i)=>emitted.push([s,i]));
  parser.push('{"zh":"你好，哥哥。","ja":"お');assert.equal(emitted.length,0);
@@ -25,4 +25,21 @@ test('local result narration requests Japanese pairs and retains the actual resu
  const prompt=localBilingualPrompt(result);
  assert.match(prompt,/日语播报/);assert.match(prompt,/同义中文字幕/);assert.match(prompt,/不得更改作品身份、数字、集数/);
  assert.equal(JSON.parse(prompt.split('本地结果：')[1]),result);
+});
+
+test('short related lines become one continuous utterance with the complete subtitle',()=>{
+ const items=[{ja:'お兄ちゃん、気をつけてね。',zh:'哥哥，路上小心呀。'},{ja:'忘れ物はない？',zh:'没有忘带东西吧？'},{ja:'無理しないでね。',zh:'别太勉强自己。'}];
+ const original=structuredClone(items),groups=groupBilingualSpeech(items);
+ assert.equal(groups.length,1);
+ assert.equal(groups[0].ja,items.map(s=>s.ja).join(''));
+ assert.equal(groups[0].zh,items.map(s=>s.zh).join(''));
+ assert.deepEqual(items,original);
+});
+
+test('long replies stay within Japanese synthesis and Chinese subtitle bounds without dropping content',()=>{
+ for(const items of [[{ja:'あ'.repeat(260),zh:'一'.repeat(100)},{ja:'い'.repeat(200),zh:'二'.repeat(100)}],[{ja:'あ'.repeat(100),zh:'一'.repeat(180)},{ja:'い'.repeat(100),zh:'二'.repeat(180)}]]){
+  const groups=groupBilingualSpeech(items);assert.equal(groups.length,2);
+  assert.ok(groups.every(s=>s.ja.length<=400&&s.zh.length<=300));
+  for(const key of ['ja','zh'])assert.equal(groups.map(s=>s[key]).join(''),items.map(s=>s[key]).join(''));
+ }
 });

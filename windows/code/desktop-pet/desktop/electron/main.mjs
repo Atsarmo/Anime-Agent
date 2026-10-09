@@ -1,5 +1,6 @@
 import {startCharacterSettings} from '../../tools/character-settings.mjs';
 import {readRender,saveRender,renderMetricsFile} from '../../tools/render-settings.mjs';
+import {readFraming} from '../../tools/model-framing-settings.mjs';
 import { app, BrowserWindow, ipcMain, protocol, screen, Menu, shell, Tray, nativeImage } from 'electron';
 import { createTrayImage } from './tray-icon.mjs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -22,6 +23,7 @@ const codexChat = openaiChat && process.env.PET_CHAT_MODE === 'codex';
 const inspect = process.argv.includes('--inspect');
 const smoke = process.argv.includes('--smoke-test');
 let smokeRendererErrors=0;
+let smokeFramingProfile;
 let smokeVoiceScope,smokeVoiceStates=[];
 app.setName('AAAAGENT');
 app.setPath('userData', resolve(app.getPath('appData'), 'AAAAGENT', smoke ? 'smoke-test' : preview ? 'preview' : codexChat ? 'codex-chat' : openaiChat ? 'openai-chat' : 'desktop'));
@@ -37,14 +39,16 @@ function updateTrayMenu(){
     {label:win.isVisible()?'隐藏桌宠':'显示桌宠',click:()=>{if(win.isVisible())win.hide();else win.showInactive();updateTrayMenu();}},
     {label:'打开对话',click:()=>{win.show();deliver('openChat');win.focus();}},
     {label:'角色设置',enabled:Boolean(characterSettingsUrl),click:()=>{if(characterSettingsUrl)void shell.openExternal(characterSettingsUrl).catch(()=>{});}},
+    {label:'置顶',type:'checkbox',checked:prefs.alwaysOnTop,click:item=>{prefs.alwaysOnTop=item.checked;win.setAlwaysOnTop(prefs.alwaysOnTop);savePreferences();updateTrayMenu();}},
     {type:'separator'},
     {label:'退出桌宠',click:()=>app.quit()}
   ]);
   tray.setContextMenu(trayMenu);
 }
-let prefs = { mode: 'full', width: 360, hotkey: null, ssaaSamples:16 }, anchor, prefsFile, writes = Promise.resolve();
+let prefs = { mode: 'full', width: 360, hotkey: null, ssaaSamples:16, alwaysOnTop:true }, anchor, prefsFile, writes = Promise.resolve();
 const renderRoot=smoke?app.getPath('userData'):fileURLToPath(new URL('../../../../',import.meta.url));
 let renderProfile={samples:16,revision:'default'},renderWrites=Promise.resolve(),renderSaving=false;
+let framingProfile;
 let characterSettingsUrl;
 const deliver = (method, ...args) => { if (ready && win && !win.isDestroyed()) win.webContents.send('pet:delivery', method, ...args); };
 const connection = new BackendConnection({
@@ -83,7 +87,7 @@ function layout(targetDisplay) {
   anchor = fitted.anchor;
   const current = win.getBounds();
   if (['x', 'y', 'width', 'height'].some(key => current[key] !== fitted.bounds[key])) win.setBounds(fitted.bounds);
-  deliver('displayConfig', {...fitted.config,ssaaSamples:renderProfile.samples});
+  deliver('displayConfig', {...fitted.config,ssaaSamples:renderProfile.samples,framingProfile});
 }
 const trusted = event => win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === 'pet://app/index.html';
 const start = () => connection.start(node, [backend], process.env);
@@ -149,7 +153,8 @@ ipcMain.on('pet:diagnostic', (event, value) => {
   if (!trusted(event) || !value) return;
   if(value.type==='render_metrics'&&Number.isFinite(value.width)&&Number.isFinite(value.height)&&Number.isFinite(value.actualSamples)&&value.width>0&&value.height>0){void writeFile(renderMetricsFile(renderRoot),JSON.stringify({at:Date.now(),width:value.width,height:value.height,actualSamples:value.actualSamples,limited:value.limited===true,gpuMs:Number.isFinite(value.gpuMs)?value.gpuMs:null})).catch(()=>{});}
 
-  if(smoke&&['model-error','script-error','promise-error'].includes(value.type))smokeRendererErrors++;
+  if(smoke&&['model-error','script-error','promise-error'].includes(value.type)){smokeRendererErrors++;if(typeof value.message==='string')console.error(value.message.slice(0,500));}
+  if(smoke&&value.type==='model-framing')smokeFramingProfile=value;
   if(smoke&&value.type==='playback-state')smokeVoiceStates.push(value.event);
   // Don't copy arbitrary renderer text, chat or media into diagnostic logs.
   if (['model-ready', 'model-error', 'script-error', 'promise-error'].includes(value.type)) process.stderr.write(`Renderer: ${value.type}\n`);
@@ -163,17 +168,20 @@ prefsFile = resolve(app.getPath('userData'), 'windows-display.json');
 try {
   const saved = JSON.parse(await readFile(prefsFile, 'utf8'));
   if (['full', 'half'].includes(saved.mode)) prefs.mode = saved.mode;
+  if (typeof saved.alwaysOnTop === 'boolean') prefs.alwaysOnTop = saved.alwaysOnTop;
   if (Number.isFinite(saved.width)) prefs.width = Math.max(220, Math.min(720, saved.width));
   if (validHotkey(saved.hotkey)) prefs.hotkey = saved.hotkey;
   if (Number.isFinite(saved.anchor?.x) && Number.isFinite(saved.anchor?.y)) anchor = saved.anchor;
 } catch {}
 renderProfile=await readRender(renderRoot);prefs.ssaaSamples=renderProfile.samples;
+framingProfile=await readFraming(renderRoot);
+setInterval(async()=>{try{const profile=await readFraming(renderRoot);if(profile.revision!==framingProfile.revision){framingProfile=profile;layout();}}catch{}},500).unref();
 await mkdir(dirname(renderMetricsFile(renderRoot)),{recursive:true});
 setInterval(async()=>{if(renderSaving)return;try{const profile=await readRender(renderRoot);if(!renderSaving&&profile.revision!==renderProfile.revision){renderProfile=profile;prefs.ssaaSamples=profile.samples;layout();}}catch{}},500).unref();
 const area = screen.getPrimaryDisplay().workArea;
 anchor ??= { x: area.x + area.width - 220, y: area.y + Math.max(0, area.height - 430) };
 win = new BrowserWindow({ title: preview ? 'AAAAGENT · Offline preview' : 'AAAAGENT', width: 380, height: 376,
-  frame: false, transparent: true, backgroundColor: '#00000000', alwaysOnTop: true, hasShadow: false, resizable: false, show: !smoke,
+  frame: false, transparent: true, backgroundColor: '#00000000', alwaysOnTop: prefs.alwaysOnTop, hasShadow: false, resizable: false, show: !smoke,
   webPreferences: { preload: resolve(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true,
     partition: 'aaaagent-desktop', backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' } });
 win.setIgnoreMouseEvents(true, { forward: true });
@@ -182,8 +190,10 @@ try{
   win.setSkipTaskbar(true);
   updateTrayMenu();
   tray.on('click',()=>{win.showInactive();updateTrayMenu();});
-  win.on('show',updateTrayMenu);win.on('hide',updateTrayMenu);
+  win.on('show',()=>{win.setAlwaysOnTop(prefs.alwaysOnTop);updateTrayMenu();});win.on('hide',updateTrayMenu);
 }catch{tray?.destroy();tray=undefined;win.setSkipTaskbar(false);process.stderr.write('Tray unavailable; keeping taskbar access.\n');}
+// Windows may reset the native z-order while removing the taskbar entry.
+win.setAlwaysOnTop(prefs.alwaysOnTop);
 Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'AAAAGENT', submenu: [
   { label: 'Reload', accelerator: 'Ctrl+R', click: () => { connection.close(); ready = false; win.webContents.reload(); } },
   { label: 'Developer tools', accelerator: 'Ctrl+Shift+I', click: () => win.webContents.toggleDevTools() }, { role: 'quit' }
@@ -215,6 +225,26 @@ app.on('before-quit', event => {
 app.on('window-all-closed', () => app.quit());
 app.on('will-quit',()=>{tray?.destroy();tray=undefined;});
 layout();
+if(smoke&&process.argv.includes('--tray-smoke')){
+  const original=prefs.alwaysOnTop;
+  try{
+    if(!tray||tray.isDestroyed())throw Error('Native tray was not created');
+    await win.loadURL('data:text/html,<html><body></body></html>');
+    win.showInactive();
+    await new Promise(done=>setTimeout(done,100));
+    if(win.isAlwaysOnTop()!==original)throw Error('Saved topmost preference was not restored: '+JSON.stringify({expected:original,actual:win.isAlwaysOnTop(),visible:win.isVisible()}));
+    for(const checked of [false,true]){
+      const item=trayMenu.items.find(item=>item.label==='置顶');
+      if(!item||item.type!=='checkbox')throw Error('Topmost checkbox missing');
+      item.checked=checked;item.click(item);
+      await writes;
+      const saved=JSON.parse(await readFile(prefsFile,'utf8'));
+      if(win.isAlwaysOnTop()!==checked||saved.alwaysOnTop!==checked||trayMenu.items.find(item=>item.label==='置顶').checked!==checked)throw Error('Topmost toggle did not update window, menu and saved preference');
+    }
+    console.log('TRAY_TOPMOST_OK: native window and checkbox toggle together; preference persists.');
+  }finally{prefs.alwaysOnTop=original;win.setAlwaysOnTop(original);savePreferences();await writes;app.quit();}
+  return;
+}
 await win.loadURL('pet://app/index.html');
 if (inspect) win.webContents.openDevTools({ mode: 'detach' });
 if (smoke) {
@@ -228,6 +258,45 @@ if (smoke) {
       await new Promise(done => setTimeout(done, 200));
     }
     if (!loaded) throw Error('Renderer or offline backend did not become ready: ' + await win.webContents.executeJavaScript("document.getElementById('status').textContent"));
+    if(process.argv.includes('--framing-smoke')){
+      await win.webContents.executeJavaScript("document.getElementById('view-half').click()");
+      await new Promise(done=>setTimeout(done,500));
+      const capture=async path=>{const rectangle=await win.webContents.executeJavaScript("(() => {const r=document.getElementById('model').getBoundingClientRect();return {x:Math.floor(r.x),y:Math.floor(r.y),width:Math.ceil(r.width),height:Math.ceil(r.height)};})()");await writeFile(resolve(path),(await win.webContents.capturePage(rectangle)).toPNG());};
+      if(option('--framing-before'))await capture(option('--framing-before'));
+      const settings=await startCharacterSettings(renderRoot),settingsWindow=new BrowserWindow({width:880,height:1000,show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true}});
+      try{
+        await settingsWindow.loadURL(settings.url);
+        const deadline=Date.now()+5000;
+        while(await settingsWindow.webContents.executeJavaScript("document.getElementById('framing-save').disabled")){if(Date.now()>deadline)throw Error('Framing controls failed to load');await new Promise(done=>setTimeout(done,50));}
+        await settingsWindow.webContents.executeJavaScript("(() => {const $=id=>document.getElementById(id);$('tab-render').click();for(const [key,value] of [['scale',80],['x',0],['y',24]]){$('framing-'+key).value=value;$('framing-'+key).dispatchEvent(new Event('input',{bubbles:true}));}$('framing-save').click();})()");
+        while(smokeFramingProfile?.mode!=='half'||smokeFramingProfile.scale!==80||smokeFramingProfile.y!==24||await settingsWindow.webContents.executeJavaScript("document.getElementById('framing-save').disabled")){if(Date.now()>deadline)throw Error('Saved framing did not reach renderer');await new Promise(done=>setTimeout(done,100));}
+        if(process.argv.includes('--framing-preview-smoke')){
+          const previewDeadline=Date.now()+30000;
+          while(!await settingsWindow.webContents.executeJavaScript("document.getElementById('framing-stage').dataset.ready==='true'")){
+            if(Date.now()>previewDeadline)throw Error('Preview did not load: '+await settingsWindow.webContents.executeJavaScript("document.getElementById('framing-preview-status').textContent+' '+(document.getElementById('framing-preview-status').dataset.error||'')"));await new Promise(done=>setTimeout(done,100));
+          }
+          const checksum=()=>settingsWindow.webContents.executeJavaScript("(() => {const c=document.getElementById('framing-output'),p=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let sum=0,count=0;for(let i=3;i<p.length;i+=4)if(p[i])count++;for(let i=0;i<p.length;i+=97)sum=(sum+p[i]*(i%991+1))%1000000007;return {sum,count};})()");
+          const prior=await checksum();if(!prior.count)throw Error('Preview output is blank');
+          const rect=await settingsWindow.webContents.executeJavaScript("(() => {const r=document.getElementById('framing-selection').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
+          const mouse=(type,x,y)=>settingsWindow.webContents.sendInputEvent({type,x:Math.round(x),y:Math.round(y),...(type==='mouseMove'?{}:{button:'left',clickCount:1})});
+          mouse('mouseMove',rect.x,rect.y);mouse('mouseDown',rect.x,rect.y);mouse('mouseMove',rect.x+12,rect.y+6);mouse('mouseUp',rect.x+12,rect.y+6);await new Promise(done=>setTimeout(done,150));
+          const moved=await settingsWindow.webContents.executeJavaScript("Number(document.getElementById('framing-x').value)");
+          if(Math.abs(moved)<1||(await readFraming(renderRoot)).half.x!==0||(await checksum()).sum===prior.sum)throw Error('Drag must update only the visible preview until saved');
+          const handle=await settingsWindow.webContents.executeJavaScript("(() => {const r=document.getElementById('framing-handle').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
+          mouse('mouseMove',handle.x,handle.y);mouse('mouseDown',handle.x,handle.y);mouse('mouseMove',handle.x-8,handle.y-8);mouse('mouseUp',handle.x-8,handle.y-8);await new Promise(done=>setTimeout(done,100));
+          const zoom=await settingsWindow.webContents.executeJavaScript("Number(document.getElementById('framing-scale').value)");if(zoom<=80)throw Error('Resizing the selection did not change the zoom');
+          await settingsWindow.webContents.executeJavaScript("document.getElementById('framing-save').click()");
+          const saveDeadline=Date.now()+5000;while(await settingsWindow.webContents.executeJavaScript("document.getElementById('framing-save').disabled")){if(Date.now()>saveDeadline)throw Error('Preview framing save failed');await new Promise(done=>setTimeout(done,100));}
+          console.log('FRAMING_PREVIEW_OK: nonblank model, rectangular drag and resize update preview before saving, saved profile reaches native host.');
+        }
+        await new Promise(done=>setTimeout(done,300));
+        if(option('--framing-after'))await capture(option('--framing-after'));
+        if(option('--framing-settings'))await writeFile(resolve(option('--framing-settings')),(await settingsWindow.webContents.capturePage()).toPNG());
+        if(smokeRendererErrors)throw Error('Renderer failed while applying framing');
+        console.log('FRAMING_SMOKE_OK: settings controls saved half view, native host applied the profile, renderer remained healthy.');
+      }finally{settingsWindow.destroy();await settings.close();}
+      app.quit();return;
+    }
     if(option('--model-screenshot')){
       await win.webContents.executeJavaScript("document.getElementById('view-half').click()");
       await new Promise(done=>setTimeout(done,300));

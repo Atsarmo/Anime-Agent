@@ -79,7 +79,7 @@ $('management').onclick = () => {
   $('management-notice').hidden = true;
   native('shell', { type:'open_management' });
 };
-const display = installDisplayControls({ get: $, shell: value => native('shell', value), setFraming: mode => renderer?.setFraming(mode) });
+const display = installDisplayControls({ get: $, shell: value => native('shell', value), setFraming: mode => renderer?.setFraming(mode),setFramingProfile:profile=>renderer?.setFramingProfile(profile) });
 const hold = new PressToTalk({
   start() {
     // A fresh physical hold supersedes pending generation, output or capture cleanup.
@@ -544,7 +544,7 @@ window.addEventListener('unhandledrejection', e => report({ type: 'promise-error
 renderUI(); native('shell', { type: 'ready' });
 let frame = 0;
 try {
-  renderer = new JellyfishRenderer($('model'), report,{ssaaSamples}); await renderer.load(); applyPresentationPolicy(); renderer.setFraming(display.mode); $('loading').hidden = true;
+  renderer = new JellyfishRenderer($('model'), report,{ssaaSamples}); await renderer.load(); applyPresentationPolicy(); renderer.setFraming(display.mode); if(display.framingProfile)renderer.setFramingProfile(display.framingProfile); $('loading').hidden = true;
   // Transparent Electron surfaces can be recomposited on focus and mouse input.
   // Render each display frame and refill the canvas immediately on those events.
   const redraw = () => { if (renderer?.ready) renderer.draw(); };

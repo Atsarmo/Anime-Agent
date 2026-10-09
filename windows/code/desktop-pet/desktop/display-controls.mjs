@@ -1,6 +1,6 @@
 // The native shell owns saved preferences and screen constraints. These controls
 // only express user intent and apply its acknowledgement in logical CSS pixels.
-export function installDisplayControls({ get, shell, setFraming }) {
+export function installDisplayControls({ get, shell, setFraming, setFramingProfile=()=>{} }) {
   let config = { mode: 'full', preferredWidth: 360, modelWidth: 360, modelHeight: 340, drawerHeight: 540 };
   let drag = null;
   const handle = get('model-resize');
@@ -34,6 +34,7 @@ export function installDisplayControls({ get, shell, setFraming }) {
     get('drawer').style.height = `${value.drawerHeight}px`;
     for (const mode of ['full', 'half']) get(`view-${mode}`).setAttribute('aria-pressed', String(mode === value.mode));
     setFraming(value.mode);
+    if(value.framingProfile)setFramingProfile(value.framingProfile);
   }
   for (const mode of ['full', 'half']) {
     const button = get(`view-${mode}`);
@@ -71,5 +72,5 @@ export function installDisplayControls({ get, shell, setFraming }) {
     shell({ type: 'resize_model', phase: 'commit', width: config.preferredWidth + step });
   };
   receive(config);
-  return { receive, cancel, get mode() { return config.mode } };
+  return { receive, cancel, get mode() { return config.mode },get framingProfile(){return config.framingProfile;} };
 }
