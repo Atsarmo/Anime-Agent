@@ -15,19 +15,22 @@ import { BrowserCaptureDriver } from '../media/browser-capture.ts';
 import { DESKTOP_BRIDGE_VERSION } from '../contracts/desktop-bridge.ts';
 const $ = id => document.getElementById(id);
 const native = (name, value) => window.desktopHost ? window.desktopHost.postMessage(name, value) : window.webkit?.messageHandlers[name]?.postMessage(value);
-const report = value => native('diagnostic', value);
+const report=value=>{if(value.type==='render_metrics'){$('ssaa-cost').textContent='GPU 像素开销 ≈ '+value.actualSamples.toFixed(1)+'× · '+value.width+'×'+value.height+' · GPU '+(value.gpuMs===null?'计时不可用':value.gpuMs.toFixed(2)+' ms')+(value.limited?'（尺寸受限）':'');}native('diagnostic',value);};
 const connection = new DesktopConnectionState();
 const send = (value, generation = connection.generation) => {
   if (connection.current(generation) && connection.connected) native('desktop', { generation, message: value });
 };
 const view = new DesktopViewState();
 const workSpeechView=new DesktopViewState();
+const sentenceSpeechView=new DesktopViewState();
+let sentenceOutput=Promise.resolve(),sentenceEpoch=0,sentenceSubtitle='',sentenceFullText=null,sentenceTranscript=[],sentencePending=0,sentencePlayingIndex=-1,sentenceSpokenIndex=-1;const sentenceSeen=new Set();
+function clearSentenceSpeech(){sentenceEpoch++;sentencePending=0;sentenceFullText=null;sentenceTranscript=[];sentencePlayingIndex=sentenceSpokenIndex=-1;sentenceSeen.clear();sentenceSpeechView.reset();$('live-subtitle').hidden=true;}
 let workNotice=null,workSpeechBlocked=false,backendSessionId=null;
 const spokenNotices=new Set();
 const chat = new DesktopChatLog();
 let companionLabel=COMPANION_LABEL,hasCharacterSettings=false;
-let antialiasLevel='enhanced';
-$('antialias-level').onchange=()=>native('shell',{type:'set_antialias',level:$('antialias-level').value});
+let ssaaSamples=16;
+$('ssaa-samples').onchange=()=>native('shell',{type:'set_ssaa',samples:Number($('ssaa-samples').value)});
 const captureFeedback=new CaptureFeedback($);let captureFeedbackToken;
 let wakeFeedbackToken,wakeRequestId=null,wakeUI={phase:'off',enabled:false};
 const wakeLabels={connecting:'连接中',waiting:'等待唤醒',listening:'正在听',submitting:'正在提交',replying:'等待唤醒'};
@@ -120,14 +123,24 @@ const features = { type: 'features', secureContext: isSecureContext, mediaDevice
 report(features);
 function renderUI() {
   wake.observe({busy:!!capturing||voicePhase!=='idle'||awaitingTextTurn||awaitingTranscript||['listening','thinking','speaking'].includes(view.state)||workSpeechView.state==='speaking',playing:playback.busy});
-  const uiKey = JSON.stringify([wakeUI.phase,wakeUI.detail,awaitingTextTurn, awaitingTranscript, work.expanded,work.state?.sourceInput?.draftId,workSpeechView.state, voicePhase, chat.revision, view.reply, view.error, view.state, view.characterId, view.invitation?.id, view.invitation?.text, connection.state, connection.reason, connection.canRetry, introduction?.id, introduction?.text]);
+  const uiKey = JSON.stringify([wakeUI.phase,wakeUI.detail,awaitingTextTurn, awaitingTranscript, work.expanded,work.state?.sourceInput?.draftId,workSpeechView.state, sentenceSpeechView.state, sentencePending, voicePhase, chat.revision, view.reply, view.error, view.state, view.characterId, view.invitation?.id, view.invitation?.text, connection.state, connection.reason, connection.canRetry, introduction?.id, introduction?.text]);
   if (uiKey === lastUI) return;
   lastUI = uiKey;
   const rows = chat.rows(view.characterId).map(row => {
     const item = document.createElement('div'); item.className = `chat-row ${row.kind}`;item.dataset.rowId=String(row.id);
     const label = document.createElement('span'); label.className = 'chat-label';
     label.textContent = row.kind === 'user' ? `${row.sourceLabel??'你'}${row.status === 'sending' ? ' · 发送中' : row.status === 'failed' ? ' · 未送达' : ''}` : companionLabel;
-    const text = document.createElement('div'); text.textContent = row.text;
+    const text = document.createElement('div');
+    if(row.kind==='user')text.textContent=row.text;
+    else {
+      let offset=0;
+      for(const match of row.text.matchAll(/https:\/\/(?:www\.)?agedm\.io\/(?:detail\/\d+|update)(?![\w/?#])/g)){
+        text.append(document.createTextNode(row.text.slice(offset,match.index)));
+        const link=document.createElement('a');link.href=match[0];link.textContent=match[0];link.style.color='inherit';
+        link.onclick=event=>{event.preventDefault();native('shell',{type:'open_anime_page',url:match[0]});};text.append(link);offset=match.index+match[0].length;
+      }
+      text.append(document.createTextNode(row.text.slice(offset)));
+    }
     item.append(label, text);
     if(row.kind==='user'&&row.text.length>140){const expanded=expandedInputs.has(row.id);text.className=expanded?'input-original':'input-original input-original-preview';const more=document.createElement('button');more.type='button';more.className='input-full-toggle';more.textContent=expanded?'收起全文':'查看输入全文';more.setAttribute('aria-expanded',String(expanded));more.onclick=()=>{if(expanded)expandedInputs.delete(row.id);else expandedInputs.add(row.id);preserveReading=true;lastUI='';renderUI();};item.append(more);}
     return item;
@@ -149,12 +162,12 @@ function renderUI() {
   if(preserveReading){scroller.scrollTop=oldScroll;preserveReading=false;}
   else if(inputRow)scroller.scrollTop=Math.max(0,(scroller.scrollTop||0)+inputRow.getBoundingClientRect().top-scroller.getBoundingClientRect().top);
   else scroller.scrollTop=nearBottom?scroller.scrollHeight:oldScroll;
-  $('status').textContent = connectionText() || view.error || (workSpeechView.state==='speaking'?'正在播报任务状态…':'') || (awaitingTranscript ? '正在转写…' : '') || (voicePhase === 'preparing' ? '正在准备麦克风…' : '') || ({ idle: wakeLabels[wakeUI.phase]||(wakeUI.phase==='error'?'唤醒已停止，请在网页重新开启':'我在这里'), listening: voicePhase === 'recording' ? '正在听你说 · 再点一次结束' : '正在准备麦克风…', thinking: '正在想怎么回应你…', speaking: '正在说话…', error: '这一轮没有完成' }[view.state]);
-  $('thinking-indicator').hidden = !connection.connected || !!view.error || awaitingTranscript || !(awaitingTextTurn || view.state === 'thinking');
+  $('status').textContent = connectionText() || view.error || (workSpeechView.state==='speaking'?'正在播报任务状态…':'') || (awaitingTranscript ? '正在转写…' : '') || (voicePhase === 'preparing' ? '正在准备麦克风…' : '') || ({ idle: wakeLabels[wakeUI.phase]||(wakeUI.phase==='error'?'唤醒已停止，请在网页重新开启':'我在这里'), listening: voicePhase === 'recording' ? '正在听你说 · 再点一次结束' : '正在准备麦克风…', thinking: '正在想怎么回应你…', speaking: '正在说话…', error: '这一轮没有完成' }[sentenceSpeechView.state==='speaking'?'speaking':view.state]);
+  $('thinking-indicator').hidden = !connection.connected || !!view.error || awaitingTranscript || !(awaitingTextTurn || view.state === 'thinking') || sentenceSpeechView.state==='speaking';
   reconnect.hidden = connection.active || !connection.canRetry; reconnect.disabled = connection.active;
   $('invitation').disabled = !connection.connected;
   $('voice').textContent = voicePhase === 'preparing' ? '取消准备' : voicePhase === 'recording' ? '说完了' : '开始语音';
-  $('stop').hidden = (view.state === 'idle' || view.state === 'error')&&!workNotice;
+  $('stop').hidden = (view.state === 'idle' || view.state === 'error')&&!workNotice&&!sentencePending;
   $('voice').disabled = !connection.connected || (voicePhase === 'idle' && !['idle', 'error'].includes(view.state));
   $('send').disabled = !connection.connected || chat.pending(view.characterId);
   $('invitation').hidden = !view.invitation; $('invitation').textContent = view.invitation?.text ?? '';
@@ -215,9 +228,10 @@ function fitComposer() {
   const input = $('text'); input.style.height = 'auto';
   input.style.height = `${Math.min(120, Math.max(24, input.scrollHeight || 24))}px`;
 }
-const playback = new DesktopPlaybackController(new BrowserPlaybackDriver(), scope => view.accepts(scope)||workSpeechView.accepts(scope), (requestId, event) => {
-  const workOutput=workSpeechView.accepts(event.scope);
-  (workOutput?workSpeechView:view).receive({type:'playback',playback:event});
+const playback = new DesktopPlaybackController(new BrowserPlaybackDriver(), scope => view.accepts(scope)||workSpeechView.accepts(scope)||sentenceSpeechView.accepts(scope), (requestId, event) => {
+  const sentenceOutput=sentenceSpeechView.accepts(event.scope),workOutput=!sentenceOutput&&workSpeechView.accepts(event.scope);
+  (sentenceOutput?sentenceSpeechView:workOutput?workSpeechView:view).receive({type:'playback',playback:event});
+  if(sentenceOutput){if(event.type==='started'){if(sentenceSpokenIndex!==sentencePlayingIndex){sentenceTranscript.push(sentenceSubtitle);sentenceSpokenIndex=sentencePlayingIndex;}const spoken=sentenceTranscript.join('\n');if(sentenceFullText!==null)view.reply=sentenceFullText;else if(!view.reply.startsWith(spoken))view.reply=spoken;chat.reply(event.scope,view.reply);$('live-subtitle').textContent=sentenceSubtitle;$('live-subtitle').hidden=false;}if(['ended','stopped','error'].includes(event.type))$('live-subtitle').hidden=true;}
   if(workOutput&&event.type==='started'&&workNotice)workNotice.started=true;
   if(workOutput&&event.type==='ended'&&workNotice?.started&&workNotice.workBinding)work.presented(workNotice.workBinding);
   if(workOutput&&['ended','stopped','error'].includes(event.type)){workNotice=null;workSpeechView.reset();}
@@ -260,7 +274,7 @@ function command(cmd,{wakeInput=false}={}) {
   if (cmd.type === 'cancel') { work.forgetBinding();chat.failPending(view.characterId); $('text').value = chat.draft(view.characterId); }
   if (['cancel','submit_text'].includes(cmd.type)) hold.clear();
   if (['cancel','submit_text','start_voice','click_invitation'].includes(cmd.type)) {
-    clearWorkSpeech();workSpeechBlocked=false;inputFocusEpoch++;inputScope=null;awaitingTranscript=false;work.input(!!cmd.workBinding); routeFocusEpoch=++interactionFocusEpoch; companionRoute=null; void stopPlayback(); stopCapture(); renderer?.reset();
+    clearWorkSpeech();clearSentenceSpeech();workSpeechBlocked=false;inputFocusEpoch++;inputScope=null;awaitingTranscript=false;work.input(!!cmd.workBinding); routeFocusEpoch=++interactionFocusEpoch; companionRoute=null; void stopPlayback(); stopCapture(); renderer?.reset();
   }
   captureAllowed = cmd.type === 'start_voice' || cmd.type === 'click_invitation';
   if (captureAllowed) { voicePhase = 'preparing'; }
@@ -279,7 +293,7 @@ function connectionChanged(value) {
   if (!connection.update(value)) return;
   wake.disconnect();wakeRequestId=null;
   captureFeedback.stop();
-  awaitingTextTurn = false;clearWorkSpeech();spokenNotices.clear();workSpeechBlocked=false;inputFocusEpoch=0;interactionFocusEpoch=0;routeFocusEpoch=0; inputScope=null;awaitingTranscript=false;work.reset(); companionRoute=null; textRequestId=null;
+  awaitingTextTurn = false;clearWorkSpeech();clearSentenceSpeech();spokenNotices.clear();workSpeechBlocked=false;inputFocusEpoch=0;interactionFocusEpoch=0;routeFocusEpoch=0; inputScope=null;awaitingTranscript=false;work.reset(); companionRoute=null; textRequestId=null;
   presentationPolicy=null;applyPresentationPolicy();
   hold.clear(); voiceRequestId = null; invitationPending = false; chat.cancelVoice(view.characterId);
   introduction = null; introductionEpoch++; introductionFramePending = false; captureAllowed = false;
@@ -326,7 +340,7 @@ async function receive(message, generation) {
     if (!connection.ready(generation)) return;
     wake.disconnect();wakeRequestId=null;
     captureFeedback.stop();
-    awaitingTextTurn = false;clearWorkSpeech();spokenNotices.clear();workSpeechBlocked=false;inputFocusEpoch=0;interactionFocusEpoch=0;routeFocusEpoch=0; inputScope=null;awaitingTranscript=false;work.reset(); companionRoute=null; textRequestId=null;
+    awaitingTextTurn = false;clearWorkSpeech();clearSentenceSpeech();spokenNotices.clear();workSpeechBlocked=false;inputFocusEpoch=0;interactionFocusEpoch=0;routeFocusEpoch=0; inputScope=null;awaitingTranscript=false;work.reset(); companionRoute=null; textRequestId=null;
     presentationPolicy=null;applyPresentationPolicy();
     introduction = null; introductionEpoch++; introductionFramePending = false; captureAllowed = false;
     void stopPlayback(); stopCapture(); renderer?.reset();
@@ -340,6 +354,26 @@ async function receive(message, generation) {
   if(message.channel==='wake_error'){if(!connection.connected)return;wake.error(message);return;}
   if (message.channel === 'backend_closed') { connectionChanged({ generation, state: 'disconnected' }); return; }
   if (!connection.connected) return;
+  if(message.channel==='speech_cancel'){
+    if(scopeEquals(companionRoute,message.scope)){void stopPlayback();clearSentenceSpeech();}return;
+  }
+  if(message.channel==='speech_segment'){
+    const scope=message.tts?.scope;
+    if(!scope||!scopeEquals(companionRoute,scope)||!Number.isInteger(message.index)||message.index<0||message.index>7||typeof message.subtitle!=='string'||message.subtitle.length>300||typeof message.audioBase64!=='string'||message.audioBase64.length>16*1024*1024)return;
+    const chunkIndex=message.chunkIndex??0;if(!Number.isInteger(chunkIndex)||chunkIndex<0||chunkIndex>127)return;
+    const key=JSON.stringify([scope,message.index,chunkIndex]);if(sentenceSeen.has(key))return;sentenceSeen.add(key);
+    const epoch=sentenceEpoch;sentencePending++;
+    sentenceOutput=sentenceOutput.then(async()=>{
+      if(epoch!==sentenceEpoch||!connection.current(generation)||!scopeEquals(companionRoute,scope))return;
+      sentenceSpeechView.scope=scope;sentenceSpeechView.expression=message.tts.expression;sentenceSubtitle=message.subtitle;sentenceFullText=typeof message.fullText==='string'?message.fullText:null;sentencePlayingIndex=message.index;
+      const bytes=bytesFromBase64(message.audioBase64);message.audioBase64='';
+      await playback.play(message.requestId,message.tts,bytes);
+    }).catch(()=>{if(epoch===sentenceEpoch){sentenceSpeechView.reset();$('live-subtitle').hidden=true;}}).finally(()=>{if(epoch===sentenceEpoch){sentencePending--;renderUI();}});
+    return;
+  }
+  if(message.channel==='speech_error'){
+    if(scopeEquals(companionRoute,message.scope)){view.error=message.message;renderUI();}return;
+  }
   if(message.channel==='character_settings'&&typeof message.name==='string'&&message.name.trim()&&message.name.length<=40){
     companionLabel=message.name;hasCharacterSettings=true;
     document.querySelector('.panel-title strong').textContent=companionLabel;
@@ -444,12 +478,10 @@ async function receive(message, generation) {
 }
 window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, openChat:()=>panel(true), showReminder: r => showReminderBubble(r,true), displayConfig: config => {
   display.receive(config);
-  if(['standard','enhanced','high','smaa'].includes(config.antialiasLevel)){
-    antialiasLevel=config.antialiasLevel;$('antialias-level').value=antialiasLevel;renderer?.setAntialiasLevel(antialiasLevel);
-  }
+  if(Number.isInteger(config.ssaaSamples)){ssaaSamples=config.ssaaSamples;$('ssaa-samples').value=ssaaSamples;renderer?.setSsaaSamples(ssaaSamples);}
   positionReminderBubble();
   if (renderer?.ready) renderer.draw();
-}, managementResult };
+}, managementResult, externalPageResult:result=>{if(!result.ok){view.error='网页未能打开，请检查默认浏览器。';renderUI();}} };
 window.desktopHost?.subscribe((method, ...args) => window.petBridge[method]?.(...args));
 $('open').onclick = () => panel(true); $('close').onclick = () => panel(false); $('quit').onclick = () => { wake.disconnect();captureFeedback.stop();void stopPlayback(); stopCapture(); native('shell', { type: 'quit' }); };
 $('text').oninput = () => { clearWorkSpeech();workSpeechBlocked=true;interactionFocusEpoch++; work.input(!!displayedWorkBinding()); chat.setDraft(view.characterId, $('text').value); fitComposer(); };
@@ -487,11 +519,11 @@ document.addEventListener('pointerleave', () => {
     native('shell', { type: 'pointer_region', interactive: false });
   }
 });
-$('character').oncontextmenu = e => e.preventDefault();
-$('character').onpointerdown = e => { if (e.button !== 0 || e.isPrimary === false) return; pointer = { id: e.pointerId, x: e.screenX, y: e.screenY, moved: false }; e.currentTarget.setPointerCapture(e.pointerId); };
+$('character').oncontextmenu = e => {e.preventDefault();native('shell',{type:'context_menu'});};
+$('character').onpointerdown = e => { if (e.button !== 0 || e.isPrimary === false) return; pointer = { id: e.pointerId, x: e.screenX, y: e.screenY, moved: false }; e.currentTarget.setPointerCapture(e.pointerId); native('shell',{type:'drag_begin'}); };
 $('character').onpointermove = e => { if (!pointer || pointer.id !== e.pointerId) return; const dx = e.screenX - pointer.x, dy = e.screenY - pointer.y; if (Math.abs(dx) + Math.abs(dy) > 3 || pointer.moved) { pointer.moved = true; native('shell', { type: 'drag', dx, dy }); pointer.x = e.screenX; pointer.y = e.screenY; } };
-$('character').onpointercancel = $('character').onlostpointercapture = () => { pointer = null; };
-$('character').onpointerup = e => { if (e.button !== 0 || !pointer || pointer.id !== e.pointerId) return; if (!pointer.moved) panel(!panelOpen); pointer = null; };
+$('character').onpointercancel = $('character').onlostpointercapture = () => { if(pointer)native('shell',{type:'drag_end'});pointer = null; };
+$('character').onpointerup = e => { if (e.button !== 0 || !pointer || pointer.id !== e.pointerId) return; native('shell',{type:'drag_end'});if (!pointer.moved) panel(!panelOpen); pointer = null; };
 const editing = target => ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName) || target?.isContentEditable || ['view-full', 'view-half', 'model-resize', 'management'].includes(target?.id);
 document.addEventListener('keydown', e => {
   const receivedAt=performance.now();
@@ -512,7 +544,7 @@ window.addEventListener('unhandledrejection', e => report({ type: 'promise-error
 renderUI(); native('shell', { type: 'ready' });
 let frame = 0;
 try {
-  renderer = new JellyfishRenderer($('model'), report,{antialiasLevel}); await renderer.load(); applyPresentationPolicy(); renderer.setFraming(display.mode); $('loading').hidden = true;
+  renderer = new JellyfishRenderer($('model'), report,{ssaaSamples}); await renderer.load(); applyPresentationPolicy(); renderer.setFraming(display.mode); $('loading').hidden = true;
   // Transparent Electron surfaces can be recomposited on focus and mouse input.
   // Render each display frame and refill the canvas immediately on those events.
   const redraw = () => { if (renderer?.ready) renderer.draw(); };
@@ -520,7 +552,7 @@ try {
   window.addEventListener('focus', redraw);
   document.addEventListener('pointerdown', redraw, true);
   document.addEventListener('pointerup', redraw, true);
-  function animate() { requestAnimationFrame(animate); if (view.expireInvitation(Date.now())) renderUI(); const shown=workSpeechView.state==='speaking'?workSpeechView:view;renderer.updateView(shown,voicePhase==='preparing'?'listening':shown.state,work.focused&&shown===view); frame++; }
+  function animate() { requestAnimationFrame(animate); if (view.expireInvitation(Date.now())) renderUI(); const shown=sentenceSpeechView.state==='speaking'?sentenceSpeechView:workSpeechView.state==='speaking'?workSpeechView:view;renderer.updateView(shown,voicePhase==='preparing'?'listening':shown.state,work.focused&&shown===view); frame++; }
   requestAnimationFrame(animate);
   // Bounded telemetry of model parameters only, never transcript/audio/frame contents.
   let lastTrace = 0;

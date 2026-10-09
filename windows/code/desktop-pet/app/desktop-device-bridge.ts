@@ -13,7 +13,7 @@ function operationFailure(operation: DeviceOperation): Error {
     case 'capture_start': return new CaptureError({ code: 'capture_start_failed', stage: 'unknown' });
     case 'capture_finish': return new CaptureError({ code: 'capture_finish_failed', stage: 'capture_finish' });
     case 'capture_stop': return new Error('录音停止未确认，请重新打开应用后重试。');
-    case 'play': return new Error('语音播放失败，请检查声音输出后重试。');
+    case 'play': case 'speech_segment': return new Error('语音播放失败，请检查声音输出后重试。');
     case 'stop': return new Error('语音停止未确认，请重新打开应用后重试。');
   }
 }

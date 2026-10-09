@@ -1,0 +1,12 @@
+{
+  "engine": "fish-finetuned",
+  "enabled": false,
+  "japaneseSubtitles": true,
+  "endpoint": "http://127.0.0.1:9882",
+  "referenceAudio": "",
+  "promptText": "",
+  "promptLanguage": "ja",
+  "textLanguage": "ja",
+  "speed": 1,
+  "fishExpression": "warm"
+}

@@ -1,0 +1,5 @@
+{
+  "version": "v5turbo",
+  "t2s_weights_path": "GPT_weights_v5turbo/your-character.ckpt",
+  "vits_weights_path": "SoVITS_weights_v5turbo/your-character.pth"
+}

@@ -1,7 +1,7 @@
+import {ssaaSize,GpuTimer} from './ssaa.mjs';
 import { InteractionMotion } from './interaction-motion.mjs';
 import { normalizePresentationIntent } from '../contracts/presentation.ts';
 import { ModelFeather } from './model-feather.mjs';
-import { SMAAPostprocess } from './smaa-postprocess.mjs';
 import presetCatalog from './assets/local-model/presets.json';
 import parameterMap from './config/parameter-map.json';
 // Application adapter over the official SDK; SDK owns deformation, physics, blending and WebGL rendering.
@@ -24,7 +24,7 @@ const webglOwners = new Set();
 export class JellyfishRenderer extends CubismUserModel {
   constructor(canvas, report = () => {}, options = {}) {
     super(); this.canvas = canvas; this.report = report; this.options = options;
-    this.antialiasLevel = options.antialiasLevel ?? 'enhanced';
+    this.ssaaSamples=options.ssaaSamples??16;
     this.textures = []; this.expressions = new Map(); this.faceKey = ''; this.gestureKey = '';
     this.expressionParameters = new Set(); this.expressionValues = new Map(); this.previewParameters = new Set(); this.appearanceParameters = new Set();
     this.interaction = new InteractionMotion(); this.elapsed = 0; this.gestureManager = new CubismExpressionMotionManager(); this.previewManager = new CubismExpressionMotionManager(); this.framing = 'full';
@@ -34,10 +34,9 @@ export class JellyfishRenderer extends CubismUserModel {
   async load() {
     // Keep the last rendered frame while the transparent window is resized or
     // recomposited between animation ticks (for example when opening the drawer).
-    this.gl = this.canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: true, preserveDrawingBuffer: true });
+    this.gl = this.canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false, preserveDrawingBuffer: true });
     if (!this.gl) throw new Error('这个窗口无法启用 WebGL');
-    this.smaa = new SMAAPostprocess(this.gl);
-    try { await this.smaa.load(); } catch(error) { this.smaa.dispose(); this.smaa=null; this.report({type:'model-smaa-unavailable',reason:error.message}); }
+    this.gpuTimer=new GpuTimer(this.gl);
     this.syncViewport();
     const base = new URL(this.options.assetBase ?? 'assets/local-model/', location.href);
     const read = async path => { const r = await fetch(new URL(path, base)); if (!r.ok && r.status !== 0) throw new Error(`模型文件加载失败：${path}`); return r.arrayBuffer(); };
@@ -252,21 +251,22 @@ export class JellyfishRenderer extends CubismUserModel {
     if (mode === 'full') this.feather?.releaseTexture();
     this.framing = mode; this.syncViewport(true);
   }
-  setAntialiasLevel(level) {
-    if(!['standard','enhanced','high','smaa'].includes(level)||this.antialiasLevel===level)return;
-    this.antialiasLevel=level;
-    if(this.ready){this.syncViewport(true);this.draw();}
+  setSsaaSamples(samples){
+    if(!Number.isInteger(samples)||samples<0||samples>64||samples===this.ssaaSamples)return;
+    this.ssaaSamples=samples;if(this.ready){this.syncViewport(true);this.draw();}
   }
   syncViewport(force = false) {
     if (!this.canvas) return;
     // Supersampling smooths model edges without recreating the WebGL context.
     // Texture mipmaps separately handle minification within each model triangle.
-    const dpr = Math.max({standard:1,enhanced:2,high:4,smaa:4}[this.antialiasLevel] ?? 2, globalThis.devicePixelRatio || 1);
-    const limit = this.gl?.getParameter(this.gl.MAX_RENDERBUFFER_SIZE) || 4096;
-    const scale = Math.min(dpr, limit / Math.max(1, this.canvas.clientWidth, this.canvas.clientHeight));
-    const width = Math.max(1, Math.round(this.canvas.clientWidth * scale)), height = Math.max(1, Math.round(this.canvas.clientHeight * scale));
+    const gl=this.gl,dpr=Math.max(1,globalThis.devicePixelRatio||1);
+    const viewport=gl?.getParameter(gl.MAX_VIEWPORT_DIMS)||[4096,4096];
+    const limit=Math.min(gl?.getParameter(gl.MAX_RENDERBUFFER_SIZE)||4096,gl?.getParameter(gl.MAX_TEXTURE_SIZE)||4096,...viewport);
+    this.ssaaMetrics=ssaaSize(this.canvas.clientWidth,this.canvas.clientHeight,dpr,this.ssaaSamples,limit);
+    const {width,height}=this.ssaaMetrics;
     if (!force && this.canvas.width === width && this.canvas.height === height) return;
     if (this.canvas.width !== width || this.canvas.height !== height) {
+      this.gpuTimer?.dispose();this.gpuTimer=new GpuTimer(this.gl);this.metricsTime=0;
       this.canvas.width = width; this.canvas.height = height;
       this.setRenderTargetSize(width, height);
     }
@@ -278,26 +278,25 @@ export class JellyfishRenderer extends CubismUserModel {
   }
   draw() {
     this.syncViewport();
-    const gl = this.gl; gl.viewport(0, 0, this.canvas.width, this.canvas.height); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    this.getRenderer().setMvpMatrix(this.projection); this.getRenderer().setRenderState(null, [0, 0, this.canvas.width, this.canvas.height]); this.getRenderer().drawModel();
+    const gl=this.gl;this.gpuTimer?.begin();
+    gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    this.getRenderer().setMvpMatrix(this.projection);this.getRenderer().setRenderState(null,[0,0,this.canvas.width,this.canvas.height]);this.getRenderer().drawModel();
     if (this.framing === 'half') {
       this.feather ??= new ModelFeather(gl);
       if (!this.feather.apply(this.canvas) && !this.featherWarning) {
         this.featherWarning = true; this.report({ type: 'model-feather-unavailable', reason: this.feather.status });
       }
     }
-    if(this.antialiasLevel==='smaa' && this.smaa) this.smaa.apply(this.canvas);
-    else {this.canvas.dataset.smaa=this.antialiasLevel==='smaa'?'unavailable':'off';if(this.smaa?.size)this.smaa.releaseTargets();}
+    this.gpuTimer?.end();
+    if(!this.metricsTime||performance.now()-this.metricsTime>1000){this.metricsTime=performance.now();this.report({type:'render_metrics',...this.ssaaMetrics,samples:this.ssaaSamples,gpuMs:this.gpuTimer?.ms??null});}
+
   }
-  snapshot() { return { mouth: this.get('ParamMouthOpenY'), body: this.get('ParamBodyAngleX'), face: this.faceKey, gesture: this.gestureKey, breath: this.get('ParamBreath') }; }
-  dispose() {
-    if (this.disposed) return;
-    this.disposed = true; this.ready = false; this.feather?.dispose(); this.smaa?.dispose();
-    this.gestureManager.stopAllMotions(); this.gestureManager.release(); this.previewManager.stopAllMotions(); this.previewManager.release();
-    for (const tex of this.textures) this.gl?.deleteTexture(tex);
-    this.textures = []; this.expressions.clear(); this.previewValues.clear(); this.release();
-    // The SDK renderer releases buffers/masks, but shader programs belong to its
-    // context manager. Release that manager after our last canvas is disposed.
-    if (webglOwners.delete(this) && webglOwners.size === 0) CubismShaderManager_WebGL.deleteInstance();
+  snapshot(){return {mouth:this.get('ParamMouthOpenY'),body:this.get('ParamBodyAngleX'),face:this.faceKey,gesture:this.gestureKey,breath:this.get('ParamBreath')};}
+  dispose(){
+    if(this.disposed)return;this.disposed=true;this.ready=false;this.feather?.dispose();this.gpuTimer?.dispose();
+    this.gestureManager.stopAllMotions();this.gestureManager.release();this.previewManager.stopAllMotions();this.previewManager.release();
+    for(const tex of this.textures)this.gl?.deleteTexture(tex);
+    this.textures=[];this.expressions.clear();this.previewValues.clear();this.release();
+    if(webglOwners.delete(this)&&webglOwners.size===0)CubismShaderManager_WebGL.deleteInstance();
   }
 }

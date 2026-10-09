@@ -3,12 +3,13 @@ import { access, readdir, stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { CodexAppConnection, CodexAppError, type CodexAppReceipt } from './codex-app.js';
+import { codexEnvironment } from './windows-proxy.js';
 
 type Pending = { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
 const uuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value);
-type Launcher = (executable: string, home: string) => ChildProcessWithoutNullStreams;
-const launch: Launcher = (executable, home) => spawn(executable, ['app-server', '--stdio'], {
-  windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CODEX_HOME: home },
+type Launcher = (executable: string, home: string, env: NodeJS.ProcessEnv) => ChildProcessWithoutNullStreams;
+const launch: Launcher = (executable, _home, env) => spawn(executable, ['app-server', '--stdio'], {
+  windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env,
 });
 
 /** Official newline-delimited app-server RPC; no private Mac IPC or ASAR hashes. */
@@ -20,7 +21,8 @@ export class CodexWindowsConnection extends CodexAppConnection {
   private closing = false;
   private notifications = new Set<(message: any) => void>();
   private chatThread: string | undefined;
-  constructor(private readonly home: string, private readonly executable?: string, private readonly requestTimeoutMs = 60000, private readonly launcher: Launcher = launch) {
+  private chatSetup: {cwd: string; instructions: string} | undefined;
+  constructor(private readonly home: string, private readonly executable?: string, private readonly requestTimeoutMs = 60000, private readonly launcher: Launcher = launch, private readonly replyTimeoutMs = 60000) {
     super(home);
   }
   private async binary(): Promise<string> {
@@ -53,10 +55,10 @@ export class CodexWindowsConnection extends CodexAppConnection {
     if (!this.child || !this.child.stdin.writable) throw new CodexAppError('unavailable');
     this.child.stdin.write(JSON.stringify(value) + '\n');
   }
-  private rpc(method: string, params: object): Promise<any> {
+  private rpc(method: string, params: object, timeoutMs = this.requestTimeoutMs): Promise<any> {
     const id = String(++this.sequence);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new CodexAppError('unavailable', undefined, 'timeout')); }, this.requestTimeoutMs);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new CodexAppError('unavailable', undefined, 'timeout')); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try { this.write({ id, method, params }); }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
@@ -67,7 +69,7 @@ export class CodexWindowsConnection extends CodexAppConnection {
     if (this.starting) return this.starting;
     this.starting = (async () => {
       const executable = await this.binary();
-      const child = this.launcher(executable, this.home);
+      const child = this.launcher(executable, this.home, await codexEnvironment(this.home));
       this.child = child;
       // Never forward auth/plugin diagnostics or unrelated thread content to the pet log.
       child.stderr.resume();
@@ -119,47 +121,82 @@ export class CodexWindowsConnection extends CodexAppConnection {
       baseInstructions: '你是中文桌面陪伴助手，进行自然、简洁的文字聊天。不要调用任何工具、访问文件或操作电脑。桌宠由本地程序处理单次提醒，用户可直接发送“10分钟后提醒我喝水”“明天下午3点提醒我喝水”“查看提醒”“取消所有提醒”。提醒按北京时间计算，需保持桌宠运行；关闭或休眠时到期，会在恢复运行后补提醒。你不能自行设置提醒，未收到本地程序实际成功回执不能声称已设置。你没有语音、长期记忆或其他任务执行能力。\n' + characterInstructions });
     if (!uuid(started?.thread?.id ?? '') || started.thread.ephemeral !== true) throw new CodexAppError('incompatible');
     this.chatThread = started.thread.id;
+    this.chatSetup = {cwd, instructions: characterInstructions};
     return { model: typeof started.model === 'string' ? started.model : 'Codex', ephemeral: true };
   }
-  async chat(text: string, signal: AbortSignal): Promise<string> {
+  async chat(text: string, signal: AbortSignal, onDelta?: (delta: string) => void): Promise<string> {
+    if(!this.child&&this.chatSetup&&!this.closing&&!signal.aborted)await this.openChat(this.chatSetup.cwd,this.chatSetup.instructions);
     if (!this.chatThread || !text.trim() || text.length > 16000 || signal.aborted) throw new CodexAppError('invalid_target');
     const threadId = this.chatThread;
+    const ownedChild = this.child;
+    const retire = () => { if (this.child === ownedChild) { ownedChild?.kill(); this.fail(); } };
     let turnId: string | undefined;
+    let timedOut = false;
     const completed = new Map<string, any>(), replies = new Map<string, string[]>();
+    const streamed = new Map<string, {turn: string; phase: string | null; text: string; sent: number}>();
+    const flush = () => {
+      if (!onDelta || !turnId || signal.aborted || timedOut) return;
+      for (const item of streamed.values()) if(item.turn===turnId && item.phase==='final_answer' && item.text.length>item.sent){const delta=item.text.slice(item.sent);item.sent=item.text.length;onDelta(delta);}
+    };
     let resolveReply!: (reply: string) => void, rejectReply!: (error: Error) => void;
     const result = new Promise<string>((resolve, reject) => { resolveReply = resolve; rejectReply = reject; });
     // Keep the promise handled if cancellation arrives while turn/start is pending.
     void result.catch(() => {});
+    let resolveTerminal!: () => void;
+    const terminal = new Promise<void>(resolve => { resolveTerminal = resolve; });
     const finish = () => {
       if (!turnId || !completed.has(turnId)) return;
+      resolveTerminal();
       const turn = completed.get(turnId), reply = (replies.get(turnId) ?? []).join('\n');
       if (turn.status === 'completed' && reply.trim()) resolveReply(reply);
       else rejectReply(new CodexAppError('unknown_delivery'));
     };
     const listener = (message: any) => {
-      if (message.method === 'connection/closed') { rejectReply(new CodexAppError('unavailable')); return; }
+      if (message.method === 'connection/closed') { resolveTerminal(); rejectReply(new CodexAppError('unavailable')); return; }
       const p = message.params;
       if (p?.threadId !== threadId) return;
+      if(message.method==='item/started'&&p.item?.type==='agentMessage')streamed.set(p.item.id,{turn:p.turnId,phase:p.item.phase??null,text:'',sent:0});
+      if(message.method==='item/agentMessage/delta'&&typeof p.delta==='string'){
+        const item=streamed.get(p.itemId);if(item&&item.turn===p.turnId){item.text+=p.delta;flush();}
+      }
       if (message.method === 'item/completed' && p.item?.type === 'agentMessage' && p.item.phase !== 'commentary' && typeof p.item.text === 'string') {
         const values = replies.get(p.turnId) ?? []; values.push(p.item.text); replies.set(p.turnId, values);
+        const item=streamed.get(p.item.id);
+        if(item&&p.item.text.startsWith(item.text)){item.phase='final_answer';item.text=p.item.text;}
+        else if(!item)streamed.set(p.item.id??String(streamed.size),{turn:p.turnId,phase:'final_answer',text:p.item.text,sent:0});
+        flush();
       }
       if (message.method === 'turn/completed') completed.set(p.turn?.id, p.turn);
       finish();
     };
     let interruption: Promise<any> | undefined;
     const abort = () => {
-      if (turnId && !interruption) interruption = this.rpc('turn/interrupt', { threadId, turnId }).catch(() => {});
-      rejectReply(new CodexAppError('unknown_delivery'));
+      if (turnId && !interruption) interruption = (async () => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          // An interrupt acknowledgement is not the terminal turn notification.
+          await Promise.race([
+            this.rpc('turn/interrupt', { threadId, turnId }, Math.min(this.requestTimeoutMs,2500)).then(() => terminal),
+            new Promise((_, reject) => { timer=setTimeout(() => reject(new Error('interrupt timeout')),2500); }),
+          ]);
+        } catch { retire(); }
+        finally { clearTimeout(timer); }
+      })();
+      rejectReply(new CodexAppError('unknown_delivery',undefined,timedOut?'timeout':undefined));
     };
     this.notifications.add(listener); signal.addEventListener('abort', abort, { once: true });
-    const timeout = setTimeout(abort, 180000);
+    const timeout = setTimeout(()=>{timedOut=true;abort();}, this.replyTimeoutMs);
     try {
-      const started = await this.rpc('turn/start', { threadId, input: [{ type: 'text', text, text_elements: [] }] });
+      const started = await this.rpc('turn/start', { threadId, input: [{ type: 'text', text, text_elements: [] }] },Math.min(this.requestTimeoutMs,15000));
       if (!uuid(started?.turn?.id ?? '')) throw new CodexAppError('unknown_delivery');
       turnId = started.turn.id;
-      if (signal.aborted) abort(); else finish();
+      if (signal.aborted || timedOut) abort(); else {flush();finish();}
       return await result;
-    } finally { clearTimeout(timeout); this.notifications.delete(listener); signal.removeEventListener('abort', abort); await interruption; }
+    } catch(error){
+      // A lost start receipt leaves the turn identity unknown; retire only this owned server.
+      if(!turnId)retire();
+      throw error;
+    } finally { clearTimeout(timeout); signal.removeEventListener('abort', abort); await interruption; this.notifications.delete(listener); }
   }
   override async discover(threadId: string): Promise<{ available: boolean }> {
     if (!uuid(threadId)) throw new CodexAppError('invalid_target');
